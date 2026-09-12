@@ -29,6 +29,7 @@ The MQTT producer is configured using a JSON object with the following fields:
 - `topic_base`: (string) The base topic for all MQTT messages.
 - `qos`: (number) The Quality of Service level (0, 1, or 2). Default: 0
 - `retained`: (boolean) Whether messages should be retained by the broker. Default: false
+- `publish_vehicle_records`: (boolean) Also publish complete vehicle record envelopes, preserving sample timestamps and typed values. Default: false. Record envelopes are never retained, even when `retained` is true.
 - `connect_timeout_ms`: (number) Connection timeout in milliseconds. Default: 30000
 - `publish_timeout_ms`: (number) Publish operation timeout in milliseconds. Default: 2500
 - `disconnect_timeout_ms`: (number) Disconnection timeout in milliseconds. Default: 250
@@ -61,6 +62,7 @@ The MQTT producer will use default values for any omitted fields as specified ab
 ## Topic Structure
 
 - Metrics: `<topic_base>/<VIN>/v/<field_name>`
+- Vehicle records (opt-in): `<topic_base>/<VIN>/records`
 - Alerts (current state): `<topic_base>/<VIN>/alerts/<alert_name>/current`
 - Alerts (history): `<topic_base>/<VIN>/alerts/<alert_name>/history`
 - Errors: `<topic_base>/<VIN>/errors/<error_name>`
@@ -77,6 +79,29 @@ All payloads are JSON encoded. Please note that the metric field values are also
 
 Note: The field contents and type are determined by the car. Fields may have their types updated with different software and vehicle versions to optimize for precision or space. For example, a float value like the vehicle's speed might be received as 12.3 (numeric) in one version and as "12.3" (string) in another version.
 
+### Vehicle record envelopes
+
+Set `publish_vehicle_records` to `true` to receive one additional message per vehicle data record. Existing metric topics and payloads remain unchanged. The new topic contains the Tesla `Payload` protobuf encoded as ProtoJSON using original protobuf field names and populated default fields:
+
+```json
+{
+  "vin": "TEST123",
+  "created_at": "2026-09-11T12:34:56.123456789Z",
+  "is_resend": false,
+  "data": [
+    {"key": "VehicleSpeed", "value": {"double_value": 42}},
+    {"key": "Location", "value": {"location_value": {"latitude": 0, "longitude": 0}}},
+    {"key": "TimeToFullCharge", "value": {"invalid": true}}
+  ]
+}
+```
+
+The VIN comes from the authenticated record identity. The original `created_at` timestamp, including fractional seconds, and `is_resend` flag are preserved. Values retain their protobuf oneof types after the receiver's normal record transformations; invalid data remains an explicit `invalid` value. ProtoJSON represents 64-bit integers as strings and special floating-point values as strings. Consumers should tolerate new fields and value types.
+
+Each record is a partial update: omitted fields are unchanged. Record envelopes are never retained because the most recent record is not a complete vehicle snapshot. Consumers that need restart recovery should persist their merged state and per-field source timestamps. Use `created_at` to reject older samples and deduplicate retransmissions; MQTT receipt time does not establish when the vehicle sampled a value. A missing timestamp is represented as `null`, not replaced with server receipt time.
+
+Record publishing uses the configured QoS and participates in the same publish timeout and reliable acknowledgment checks as individual fields. A failed record or field publication prevents the vehicle record from being acknowledged. Reliable acknowledgment confirms broker publication, not that a downstream consumer has processed or stored the message.
+
 ## Error Handling and Reliability
 
 - The producer implements reconnection logic with configurable retry intervals.
@@ -88,4 +113,3 @@ Note: The field contents and type are determined by the car. Fields may have the
 - Each field is published as a separate MQTT message, which can increase network traffic but allows for more granular subscriptions.
 - QoS levels can be configured to balance between performance and reliability.
 - The producer uses goroutines to handle message publishing asynchronously.
-

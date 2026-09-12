@@ -33,18 +33,19 @@ type Producer struct {
 
 // Config holds the configuration for the MQTT producer.
 type Config struct {
-	Broker               string `json:"broker"`
-	ClientID             string `json:"client_id"`
-	Username             string `json:"username"`
-	Password             string `json:"password"`
-	TopicBase            string `json:"topic_base"`
-	QoS                  byte   `json:"qos"`
-	Retained             bool   `json:"retained"`
-	ConnectTimeout       int    `json:"connect_timeout_ms"`
-	PublishTimeout       int    `json:"publish_timeout_ms"`
-	DisconnectTimeout    int    `json:"disconnect_timeout_ms"`
-	ConnectRetryInterval int    `json:"connect_retry_interval_ms"`
-	KeepAlive            int    `json:"keep_alive_seconds"`
+	Broker                string `json:"broker"`
+	ClientID              string `json:"client_id"`
+	Username              string `json:"username"`
+	Password              string `json:"password"`
+	TopicBase             string `json:"topic_base"`
+	QoS                   byte   `json:"qos"`
+	Retained              bool   `json:"retained"`
+	PublishVehicleRecords bool   `json:"publish_vehicle_records"`
+	ConnectTimeout        int    `json:"connect_timeout_ms"`
+	PublishTimeout        int    `json:"publish_timeout_ms"`
+	DisconnectTimeout     int    `json:"disconnect_timeout_ms"`
+	ConnectRetryInterval  int    `json:"connect_retry_interval_ms"`
+	KeepAlive             int    `json:"keep_alive_seconds"`
 }
 
 // Metrics holds the metrics for the MQTT producer.

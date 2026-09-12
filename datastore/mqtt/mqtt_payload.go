@@ -8,6 +8,8 @@ import (
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/teslamotors/fleet-telemetry/protos"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -21,6 +23,23 @@ func (p *Producer) processVehicleFields(rec *telemetry.Record, payload *protos.P
 			return tokens, fmt.Errorf("failed to marshal JSON for MQTT topic %s: %v", mqttTopicName, err)
 		}
 		token := p.client.Publish(mqttTopicName, p.config.QoS, p.config.Retained, jsonValue)
+		tokens = append(tokens, token)
+		p.updateMetrics(rec.TxType, len(jsonValue))
+	}
+	if p.config.PublishVehicleRecords {
+		// Use the authenticated record identity without changing the shared payload.
+		recordPayload := proto.Clone(payload).(*protos.Payload)
+		recordPayload.Vin = rec.Vin
+		jsonValue, err := (protojson.MarshalOptions{
+			UseProtoNames:   true,
+			EmitUnpopulated: true,
+		}).Marshal(recordPayload)
+		if err != nil {
+			return tokens, fmt.Errorf("failed to marshal vehicle record JSON")
+		}
+		mqttTopicName := fmt.Sprintf("%s/%s/records", p.config.TopicBase, rec.Vin)
+		// Records contain partial updates, not a complete vehicle snapshot.
+		token := p.client.Publish(mqttTopicName, p.config.QoS, false, jsonValue)
 		tokens = append(tokens, token)
 		p.updateMetrics(rec.TxType, len(jsonValue))
 	}
