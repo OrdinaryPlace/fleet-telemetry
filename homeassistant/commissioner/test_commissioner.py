@@ -154,6 +154,42 @@ class CommissionerTests(unittest.TestCase):
             self.execute(api)
         self.assertEqual(api.calls, [])
 
+    def test_pairing_reports_keep_missing_false_and_conflicting_signals_distinct(self):
+        api = FakeAPI()
+        current = api.current[VIN_A]
+        positive = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, self.desired)
+        self.assertTrue(positive["preflight_ready"])
+        self.assertTrue(positive["pairing_evidence"]["fleet_paired_contains_vehicle"])
+        self.assertFalse(positive["pairing_evidence"]["fleet_unpaired_contains_vehicle"])
+        current["key_paired"] = False
+        conflict = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, self.desired)
+        self.assertFalse(conflict["preflight_ready"])
+        self.assertTrue(conflict["pairing_evidence"]["fleet_paired_contains_vehicle"])
+        self.assertTrue(conflict["pairing_evidence"]["telemetry_key_paired_false"])
+        del current["key_paired"]
+        missing = c.pairing_evidence(VIN_A, api.fleet, current)
+        for field in ("present", "is_bool", "true", "false"):
+            self.assertFalse(missing["telemetry_key_paired_" + field])
+
+    def test_unknown_pairing_shapes_fail_closed_without_emitting_identifiers(self):
+        api = FakeAPI()
+        for unknown in (None, VIN_A, {VIN_A: True}, [VIN_A, "invalid-private-value"]):
+            for field in ("key_paired_vins", "unpaired_vins"):
+                fleet = copy.deepcopy(api.fleet)
+                fleet[field] = unknown
+                summary = c.status_summary(ALIASES[0], VIN_A, fleet, api.current[VIN_A], self.desired)
+                self.assertFalse(summary["preflight_ready"])
+                self.assertNotIn(VIN_A, json.dumps(summary))
+                self.assertNotIn("invalid-private-value", json.dumps(summary))
+                self.assertTrue(all(type(v) is bool for v in summary["pairing_evidence"].values()))
+        for info in (None, [], {}, {VIN_A: "private-unknown-shape"}):
+            fleet = copy.deepcopy(api.fleet)
+            fleet["vehicle_info"] = info
+            summary = c.status_summary(ALIASES[0], VIN_A, fleet, api.current[VIN_A], self.desired)
+            self.assertFalse(summary["preflight_ready"])
+            self.assertFalse(summary["pairing_evidence"]["fleet_vehicle_info_for_vehicle_is_object"])
+            self.assertNotIn("private-unknown-shape", json.dumps(summary))
+
     def test_closed_api_allowlist_rejects_vehicle_controls_and_unsigned_config(self):
         api = c.FleetAPI(self.credential)
         for path in (f"/api/1/vehicles/{VIN_A}/wake_up", f"/api/1/vehicles/{VIN_A}/command/door_unlock",

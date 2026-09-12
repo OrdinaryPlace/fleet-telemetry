@@ -35,6 +35,10 @@ Run `python3 commissioner.py`. There are three modes:
 - `get_errors`: report only counts of known TLS, DNS, connection, rate-limit,
   and other error categories. Raw errors and identifiers are not printed.
 
+`pairing_evidence` separates fleet-list membership, response-field validity,
+and the telemetry endpoint's explicit pairing boolean. Missing or malformed
+fields are unknown; a failed readiness check alone does not prove an unpaired key.
+
 Vehicle names must resolve uniquely in Tesla's vehicle list. A full 100-vehicle
 page is deliberately rejected because this personal-use helper does not guess
 pagination parameters. North American and European Fleet API audiences are

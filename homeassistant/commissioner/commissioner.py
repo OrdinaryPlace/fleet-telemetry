@@ -309,18 +309,47 @@ def firmware_supported(value: Any) -> bool:
     return bool(match and tuple(map(int, match.groups())) >= (2024, 26))
 
 
+def pairing_evidence(vin: str, fleet: dict[str, Any], current: dict[str, Any]) -> dict[str, bool]:
+    """Separate absent/invalid pairing fields from an explicit negative report."""
+    result = {}
+    for prefix, key in (("fleet_paired", "key_paired_vins"),
+                        ("fleet_unpaired", "unpaired_vins")):
+        values = fleet.get(key)
+        is_list = isinstance(values, list)
+        valid = is_list and all(isinstance(v, str) and VIN_RE.fullmatch(v) for v in values)
+        result.update({prefix + "_present": key in fleet,
+                       prefix + "_is_list": is_list,
+                       prefix + "_valid": bool(valid),
+                       prefix + "_contains_vehicle": bool(valid and vin in values)})
+    infos = fleet.get("vehicle_info")
+    info_is_object = isinstance(infos, dict)
+    info_present = info_is_object and vin in infos
+    result.update({
+        "fleet_vehicle_info_present": "vehicle_info" in fleet,
+        "fleet_vehicle_info_is_object": info_is_object,
+        "fleet_vehicle_info_contains_vehicle": info_present,
+        "fleet_vehicle_info_for_vehicle_is_object": info_present and isinstance(infos[vin], dict),
+        "telemetry_key_paired_present": "key_paired" in current,
+        "telemetry_key_paired_is_bool": type(current.get("key_paired")) is bool,
+        "telemetry_key_paired_true": current.get("key_paired") is True,
+        "telemetry_key_paired_false": current.get("key_paired") is False,
+    })
+    return result
+
+
 def status_summary(alias: str, vin: str, fleet: dict[str, Any], current: dict[str, Any],
                    desired: dict[str, Any]) -> dict[str, Any]:
-    info = fleet.get("vehicle_info", {}).get(vin, {})
-    if not isinstance(info, dict) or "config" not in current:
+    evidence = pairing_evidence(vin, fleet, current)
+    info = fleet["vehicle_info"][vin] if evidence["fleet_vehicle_info_for_vehicle_is_object"] else {}
+    if "config" not in current:
         raise Stop("vehicle_preflight_shape_unknown")
-    paired = vin in fleet.get("key_paired_vins", [])
-    explicitly_unpaired = vin in fleet.get("unpaired_vins", []) or current.get("key_paired") is False
-    ready = paired and not explicitly_unpaired
+    paired = evidence["fleet_paired_contains_vehicle"]
+    explicitly_unpaired = evidence["fleet_unpaired_contains_vehicle"] or evidence["telemetry_key_paired_false"]
+    ready = paired and evidence["fleet_unpaired_valid"] and not explicitly_unpaired
     telemetry_version = info.get("fleet_telemetry_version")
     compatible = firmware_supported(info.get("firmware_version"))
     telemetry_present = isinstance(telemetry_version, str) and bool(re.fullmatch(r"\d+(?:\.\d+)+", telemetry_version))
-    return {"vehicle": alias, "key_paired": ready,
+    return {"vehicle": alias, "key_paired": ready, "pairing_evidence": evidence,
             "firmware_supported": compatible, "telemetry_capability_reported": telemetry_present,
             "configuration_present": current["config"] is not None,
             "configuration_matches": same_config(current["config"], desired),
