@@ -34,6 +34,13 @@ python3 homeassistant/scripts/build_context.py /path/to/new-receiver-context
 python3 homeassistant/scripts/build_context.py /path/to/new-setup-context --kind commissioner
 ```
 
+Use destinations outside the source repository. The builder accepts only
+committed app/bridge runtime files and tracked receiver source, and rejects
+symlinks or selected runtime files that differ from the reviewed commit. It
+reads committed blobs, so ignored/untracked local files cannot enter a context.
+Unrelated edits to this Home Assistant documentation do not affect the selected
+runtime. Both contexts include `SOURCE_REVISION` identifying their exact source.
+
 Copy the contexts to separate directories under HA `/addons`, reload the app
 store, and install **Tesla Fleet Stream** and **Tesla Fleet Stream Setup** as
 local apps. Docker can also build each context for validation. The receiver uses
