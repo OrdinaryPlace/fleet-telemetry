@@ -7,9 +7,12 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
+import ssl
 import stat
 import subprocess
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
@@ -33,8 +36,8 @@ class RuntimeTests(unittest.TestCase):
     def snapshot(self):
         return {path.name: path.read_bytes() for path in self.directory.iterdir() if path.is_file()}
 
-    def reissue(self, filename, expires):
-        """Change only validity using the existing matching issuer and key."""
+    def reissue(self, filename, expires, omit=()):
+        """Change validity/extensions using the existing matching issuer and key."""
         existing = x509.load_pem_x509_certificate((self.directory / filename).read_bytes())
         ca_key = serialization.load_pem_private_key((self.directory / "ca.key").read_bytes(), None)
         builder = (x509.CertificateBuilder().subject_name(existing.subject).issuer_name(existing.issuer)
@@ -42,14 +45,15 @@ class RuntimeTests(unittest.TestCase):
                    .not_valid_before(dt.datetime.now(dt.UTC) - dt.timedelta(minutes=5))
                    .not_valid_after(expires))
         for extension in existing.extensions:
-            builder = builder.add_extension(extension.value, extension.critical)
+            if not isinstance(extension.value, omit):
+                builder = builder.add_extension(extension.value, extension.critical)
         certificate = builder.sign(ca_key, hashes.SHA256())
         (self.directory / filename).write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
 
     def test_generation_verifies_hostname_and_preserves_keys_on_restart(self):
         runtime.ensure_tls(self.directory, HOSTNAME)
         initial = self.snapshot()
-        result = subprocess.run(["openssl", "verify", "-CAfile", str(self.directory / "ca.pem"),
+        result = subprocess.run(["openssl", "verify", "-x509_strict", "-CAfile", str(self.directory / "ca.pem"),
                                  "-verify_hostname", HOSTNAME, str(self.directory / "server.pem")],
                                 capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
@@ -61,6 +65,69 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700)
         for path in self.directory.iterdir():
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_python_strict_tls_client_verifies_real_server_handshake(self):
+        runtime.ensure_tls(self.directory, HOSTNAME)
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(self.directory / "server.pem", self.directory / "server.key")
+        client_context = ssl.create_default_context(cafile=self.directory / "ca.pem")
+        client_context.verify_flags |= ssl.VERIFY_X509_STRICT
+        errors = []
+        with socket.socket() as listener:
+            listener.settimeout(5)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+
+            def serve():
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(5)
+                        with server_context.wrap_socket(connection, server_side=True) as secured:
+                            self.assertEqual(secured.recv(1), b"?")
+                            secured.sendall(b"!")
+                except Exception as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=serve)
+            thread.start()
+            try:
+                with socket.create_connection(listener.getsockname(), timeout=5) as connection:
+                    with client_context.wrap_socket(connection, server_hostname=HOSTNAME) as secured:
+                        secured.sendall(b"?")
+                        self.assertEqual(secured.recv(1), b"!")
+            finally:
+                thread.join(timeout=6)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+
+    def test_legacy_leaf_identifiers_are_repaired_preserving_all_keys_and_ca(self):
+        for missing in ((x509.AuthorityKeyIdentifier,), (x509.SubjectKeyIdentifier,),
+                        (x509.AuthorityKeyIdentifier, x509.SubjectKeyIdentifier)):
+            with self.subTest(missing=missing):
+                runtime.ensure_tls(self.directory, HOSTNAME)
+                self.reissue("server.pem", dt.datetime.now(dt.UTC) + dt.timedelta(days=300), omit=missing)
+                initial = self.snapshot()
+                runtime.ensure_tls(self.directory, HOSTNAME)
+                renewed = self.snapshot()
+                for filename in ("ca.pem", "ca.key", "server.key"):
+                    self.assertEqual(initial[filename], renewed[filename])
+                self.assertNotEqual(initial["server.pem"], renewed["server.pem"])
+                result = subprocess.run(["openssl", "verify", "-x509_strict", "-CAfile",
+                                         str(self.directory / "ca.pem"), "-verify_hostname", HOSTNAME,
+                                         str(self.directory / "server.pem")], capture_output=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                runtime.ensure_tls(self.directory, HOSTNAME)
+                self.assertEqual(renewed, self.snapshot())
+
+    def test_source_revision_emits_only_a_full_commit_or_fixed_diagnostic(self):
+        path = Path(self.temporary.name) / "SOURCE_REVISION"
+        self.assertEqual(runtime.source_revision(path), "unavailable")
+        for value in ("synthetic-private-value", "a" * 39, "a" * 41, "a" * 40 + "\nextra", "\N{SNOWMAN}"):
+            path.write_text(value)
+            self.assertEqual(runtime.source_revision(path), "unavailable")
+        path.write_text("a" * 40 + "\n")
+        self.assertEqual(runtime.source_revision(path), "a" * 40)
 
     def test_renewal_preserves_ca_and_server_private_key(self):
         runtime.ensure_tls(self.directory, HOSTNAME)

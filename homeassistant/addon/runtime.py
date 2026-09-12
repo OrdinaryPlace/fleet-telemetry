@@ -113,7 +113,18 @@ def ensure_tls(directory: Path, hostname: str) -> None:
             raise ValueError("Existing certificate is not valid for this TLS server")
         server_path.chmod(0o600)
         server_key_path.chmod(0o600)
-        if cert.not_valid_before_utc <= now and cert.not_valid_after_utc > now + dt.timedelta(days=30):
+        try:
+            identifiers_match = (
+                cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value
+                == x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key())
+                and cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+                == x509.SubjectKeyIdentifier.from_public_key(key.public_key())
+            )
+        except x509.ExtensionNotFound:
+            # Migrate older leaves without changing the established CA or keys.
+            identifiers_match = False
+        if (identifiers_match and cert.not_valid_before_utc <= now
+                and cert.not_valid_after_utc > now + dt.timedelta(days=30)):
             return
     else:
         key = ec.generate_private_key(ec.SECP256R1())
@@ -127,6 +138,8 @@ def ensure_tls(directory: Path, hostname: str) -> None:
             .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .add_extension(x509.KeyUsage(True, False, False, False, False, False, False, None, None), critical=True)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key()), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
             .sign(ca_key, hashes.SHA256()))
     if not server_key_path.exists():
         private_write(server_key_path, key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
@@ -221,8 +234,18 @@ def start_receiver(child_env: dict) -> subprocess.Popen:
     return process
 
 
+def source_revision(path: Path = Path("/opt/SOURCE_REVISION")) -> str:
+    """Expose only a validated build commit, never arbitrary file contents."""
+    try:
+        value = path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return "unavailable"
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else "unavailable"
+
+
 def main() -> int:
     os.umask(0o077)
+    print(f"Tesla Fleet Stream source revision: {source_revision()}", flush=True)
     with open("/data/options.json", encoding="utf-8") as stream:
         options = json.load(stream)
     tls_directory = Path("/ssl/tesla-fleet-stream")

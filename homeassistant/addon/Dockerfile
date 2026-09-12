@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir paho-mqtt==2.1.0 cryptography==50.0.1
 COPY --from=receiver /out/fleet-telemetry /usr/local/bin/fleet-telemetry
 COPY bridge/ /opt/bridge/
 COPY runtime.py /opt/runtime.py
+COPY SOURCE_REVISION /opt/SOURCE_REVISION
 ARG BUILD_VERSION=0.1.0
 ARG BUILD_ARCH=amd64
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="addon" io.hass.arch="${BUILD_ARCH}"
