@@ -1,0 +1,31 @@
+name: Tesla Fleet Stream Setup
+version: 0.1.0
+slug: tesla_fleet_stream_setup
+description: One-time signed telemetry configuration using the existing Home Assistant Tesla credentials
+url: https://github.com/OrdinaryPlace/fleet-telemetry
+arch:
+  - amd64
+startup: once
+boot: manual_only
+init: false
+homeassistant_api: true
+map:
+  - type: homeassistant_config
+    read_only: true
+  - type: ssl
+    read_only: true
+options:
+  mode: inspect
+  vehicle_names: []
+  hostname: telemetry.example.com
+  port: 8443
+  ca_file: /ssl/tesla-fleet-stream/ca.pem
+  replace_existing: false
+schema:
+  mode: list(inspect|configure|get_errors|mqtt_setup|ha_status)
+  vehicle_names:
+    - str
+  hostname: str
+  port: port
+  ca_file: str
+  replace_existing: bool

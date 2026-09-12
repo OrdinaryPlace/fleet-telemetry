@@ -8,3 +8,9 @@ vendor/
 config-local.json
 temp
 test/integration/test-certs/
+__pycache__/
+.pytest_cache/
+.venv/
+homeassistant/runtime/
+homeassistant/build/
+homeassistant/*.private.json
