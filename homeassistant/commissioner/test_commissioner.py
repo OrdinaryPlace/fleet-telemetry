@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -124,6 +125,27 @@ class CommissionerTests(unittest.TestCase):
         with self.assertRaisesRegex(c.Stop, "refresh_needed"):
             c.load_credential(self.data, now=4900)
         self.assertEqual(file.read_text(), raw)
+
+    def test_prerequisites_never_read_private_files_or_list_directory(self):
+        storage = self.data / ".storage"
+        storage.mkdir()
+        (storage / "core.config_entries").write_text("synthetic-private-contents")
+        (self.data / "tesla_fleet.key").write_text("synthetic-private-key")
+        with patch.object(Path, "open", side_effect=AssertionError("no reads")), \
+                patch.object(Path, "iterdir", side_effect=AssertionError("no listing")), \
+                patch.object(c.os, "statvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+            result = c.local_prerequisites(self.data)
+        self.assertTrue(all(result.values()))
+        self.assertTrue(all(type(value) is bool for value in result.values()))
+        self.assertNotIn("synthetic-private", json.dumps(result))
+
+    def test_prerequisites_distinguish_missing_and_writable_mounts(self):
+        missing = c.local_prerequisites(self.data / "absent")
+        self.assertFalse(any(missing.values()))
+        with patch.object(c.os, "statvfs", return_value=SimpleNamespace(f_flag=0)):
+            writable = c.local_prerequisites(self.data)
+        self.assertTrue(writable["config_directory_exists"])
+        self.assertFalse(writable["config_read_only"])
 
     def test_scope_failure_happens_before_vehicle_api(self):
         self.credential = c.Credential("unused", c.FLEET_HOSTS["na"], frozenset(), time.time() + 3600)

@@ -11,8 +11,10 @@ init: false
 homeassistant_api: true
 map:
   - type: homeassistant_config
+    path: /homeassistant_config
     read_only: true
   - type: ssl
+    path: /ssl
     read_only: true
 options:
   mode: inspect

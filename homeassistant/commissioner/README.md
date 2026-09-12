@@ -2,7 +2,10 @@
 
 This is a manual, one-shot helper for the existing native Home Assistant Tesla
 Fleet account. Run it in a separate commissioning app with no published ports.
-Mount `/homeassistant_config` and `/ssl` read-only and keep `/data` private. The
+Mount `/homeassistant_config` and `/ssl` read-only and keep `/data` private. Set
+the explicit `path` on both app mappings: Supervisor's default for
+`homeassistant_config` is `/homeassistant`. Startup checks mount flags and
+reports only prerequisite booleans before reading the native configuration. The
 runtime needs Python 3.11+, OpenSSL, and the official `tesla-http-proxy` binary.
 
 The helper reads the saved access token in place. It does not refresh tokens,

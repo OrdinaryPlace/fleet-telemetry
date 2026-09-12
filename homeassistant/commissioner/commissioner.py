@@ -110,6 +110,25 @@ def read_json(path: Path) -> Any:
         raise Stop("local_json_unavailable") from None
 
 
+def local_prerequisites(config_dir: Path) -> dict[str, bool]:
+    """Inspect only fixed file metadata; never read or enumerate configuration."""
+    try:
+        read_only = bool(os.statvfs(config_dir).f_flag & os.ST_RDONLY)
+    except OSError:
+        read_only = False
+
+    def readable(relative: str) -> bool:
+        path = config_dir / relative
+        return path.is_file() and os.access(path, os.R_OK)
+
+    return {
+        "config_directory_exists": config_dir.is_dir(),
+        "config_read_only": read_only,
+        "config_entries_readable": readable(".storage/core.config_entries"),
+        "signing_key_readable": readable("tesla_fleet.key"),
+    }
+
+
 def load_credential(config_dir: Path, now: float | None = None) -> Credential:
     """Read only the active native entry; never use or rotate refresh tokens."""
     current_time = time.time() if now is None else now
@@ -485,6 +504,12 @@ def main() -> int:
     try:
         options = Options.parse(read_json(args.options))
         config_dir = Path("/homeassistant_config")
+        prerequisites = local_prerequisites(config_dir)
+        print(json.dumps({"status": "local_prerequisites", **prerequisites}), flush=True)
+        if not prerequisites["config_directory_exists"]:
+            raise Stop("homeassistant_config_mount_unavailable")
+        if not prerequisites["config_read_only"]:
+            raise Stop("homeassistant_config_mount_not_read_only")
         credential = load_credential(config_dir)
         if options.mode == "get_errors":
             ca_pem = ""
