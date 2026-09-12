@@ -21,6 +21,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+TLS_RECHECK_SECONDS = 24 * 60 * 60
+
 
 def private_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -190,37 +192,72 @@ def receiver_output(process: subprocess.Popen, label: str = "Receiver") -> None:
             last = time.monotonic()
 
 
+def maintain_tls(directory: Path, hostname: str, next_check: float, monotonic_now: float) -> tuple[float, bool]:
+    """Check daily, renewing with the preserved keys before leaf expiry."""
+    if monotonic_now < next_check:
+        return next_check, False
+    before = (directory / "server.pem").read_bytes()
+    ensure_tls(directory, hostname)
+    changed = before != (directory / "server.pem").read_bytes()
+    return monotonic_now + TLS_RECHECK_SECONDS, changed
+
+
+def stop_process(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def start_receiver(child_env: dict) -> subprocess.Popen:
+    process = subprocess.Popen(
+        ["/usr/local/bin/fleet-telemetry", "-config", "/run/receiver.json"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=child_env,
+    )
+    threading.Thread(target=receiver_output, args=(process,), daemon=True).start()
+    return process
+
+
 def main() -> int:
     os.umask(0o077)
     with open("/data/options.json", encoding="utf-8") as stream:
         options = json.load(stream)
-    ensure_tls(Path("/ssl/tesla-fleet-stream"), options["hostname"])
+    tls_directory = Path("/ssl/tesla-fleet-stream")
+    ensure_tls(tls_directory, options["hostname"])
     receiver, bridge = configurations(options, mqtt_service())
     private_write(Path("/run/receiver.json"), json.dumps(receiver).encode())
     private_write(Path("/run/bridge.json"), json.dumps(bridge).encode())
     child_env = {key: value for key, value in os.environ.items() if key not in {"SUPERVISOR_TOKEN", "HASSIO_TOKEN"}}
     processes = [
         subprocess.Popen([sys.executable, "/opt/bridge/bridge.py", "--config", "/run/bridge.json"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=child_env),
-        subprocess.Popen(["/usr/local/bin/fleet-telemetry", "-config", "/run/receiver.json"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", env=child_env),
     ]
-    threading.Thread(target=receiver_output, args=(processes[1],), daemon=True).start()
     threading.Thread(target=receiver_output, args=(processes[0], "Bridge"), daemon=True).start()
     stopped = threading.Event()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(signum, lambda *_: stopped.set())
-    print("Tesla Fleet Stream started; vehicle telemetry stays on the private MQTT network", flush=True)
-    while not stopped.wait(1):
-        if any(process.poll() is not None for process in processes):
-            print("A stream process exited; stopping for Supervisor recovery", flush=True)
-            break
-    for process in processes:
-        if process.poll() is None:
-            process.terminate()
-    for process in processes:
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
+    try:
+        processes.append(start_receiver(child_env))
+        next_tls_check = time.monotonic() + TLS_RECHECK_SECONDS
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, lambda *_: stopped.set())
+        print("Tesla Fleet Stream started; vehicle telemetry stays on the private MQTT network", flush=True)
+        while not stopped.wait(1):
+            if any(process.poll() is not None for process in processes):
+                print("A stream process exited; stopping for Supervisor recovery", flush=True)
+                break
+            try:
+                next_tls_check, renewed = maintain_tls(tls_directory, options["hostname"], next_tls_check, time.monotonic())
+            except Exception:
+                print("TLS maintenance failed; stopping for configuration recovery", flush=True)
+                break
+            if renewed:
+                stop_process(processes[1])
+                processes[1] = start_receiver(child_env)
+                print("Receiver TLS certificate renewed; receiver restarted with preserved keys", flush=True)
+    finally:
+        for process in processes:
+            stop_process(process)
     return 0 if stopped.is_set() else 1
 
 

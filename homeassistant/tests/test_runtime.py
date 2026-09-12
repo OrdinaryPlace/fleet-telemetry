@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -75,6 +75,34 @@ class RuntimeTests(unittest.TestCase):
         ca = x509.load_pem_x509_certificate(renewed["ca.pem"])
         certificate.verify_directly_issued_by(ca)
         self.assertGreater(certificate.not_valid_after_utc, dt.datetime.now(dt.UTC) + dt.timedelta(days=300))
+
+    def test_daily_maintenance_checks_only_when_due_and_reports_actual_renewal(self):
+        runtime.ensure_tls(self.directory, HOSTNAME)
+        self.reissue("server.pem", dt.datetime.now(dt.UTC) + dt.timedelta(days=10))
+        initial = self.snapshot()
+        with patch.object(runtime, "ensure_tls", wraps=runtime.ensure_tls) as ensure:
+            deadline, changed = runtime.maintain_tls(self.directory, HOSTNAME, 100, 99)
+            self.assertEqual((deadline, changed), (100, False))
+            ensure.assert_not_called()
+            deadline, changed = runtime.maintain_tls(self.directory, HOSTNAME, deadline, 100)
+            self.assertTrue(changed)
+            self.assertEqual(deadline, 100 + runtime.TLS_RECHECK_SECONDS)
+            ensure.assert_called_once()
+            renewed = self.snapshot()
+            for filename in ("ca.pem", "ca.key", "server.key"):
+                self.assertEqual(initial[filename], renewed[filename])
+            self.assertNotEqual(initial["server.pem"], renewed["server.pem"])
+            next_deadline, changed = runtime.maintain_tls(self.directory, HOSTNAME, deadline, deadline)
+            self.assertFalse(changed)
+            self.assertEqual(next_deadline, deadline + runtime.TLS_RECHECK_SECONDS)
+            self.assertEqual(renewed, self.snapshot())
+
+    def test_receiver_shutdown_reaps_stubborn_child_before_restart(self):
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [subprocess.TimeoutExpired("synthetic-child", 10), 0]
+        runtime.stop_process(process)
+        self.assertEqual(process.mock_calls, [call.poll(), call.terminate(), call.wait(timeout=10), call.kill(), call.wait()])
 
     def test_wrong_ca_chain_and_hostname_are_not_silently_reused(self):
         runtime.ensure_tls(self.directory, HOSTNAME)
