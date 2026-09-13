@@ -54,7 +54,9 @@ neither MQTT nor this bridge needs public ingress.
 `state_file` defaults to `/data/bridge-state.json` in the CLI. The directory must
 already exist. The bridge atomically persists nanosecond timestamp fences before
 publishing a state, with mode 0600. The file contains stable slugs and source
-timestamps only: no VIN, coordinates, tokens, connection IDs, or history. A
+timestamps plus the latest valid GPS coordinates and their original source time.
+It contains no VIN, tokens, connection IDs, or complete history. Treat it as
+private location data and include app data in backups. A
 corrupt file prevents startup; a write failure stops the process with exit 2.
 Do not delete this file merely to clear an error: investigate and preserve the
 recorded fences. The standalone `Bridge` class permits no state file for unit
@@ -66,9 +68,10 @@ For slug `example_car`, initial discovery requests these IDs:
 
 | Entity | Meaning |
 | --- | --- |
-| `device_tracker.example_car_live_location` | Fresh GPS fix; Home Assistant calculates zones from coordinates |
+| `device_tracker.example_car_live_location` | Last known valid GPS fix; Home Assistant calculates zones from coordinates |
 | `sensor.example_car_live_speed` | VehicleSpeed in mph, Home Assistant can convert display units |
 | `sensor.example_car_live_last_update` | Original timestamp of the newest accepted supported field |
+| `binary_sensor.example_car_live_location_fresh` | A new, valid GPS fix within the freshness window |
 | `binary_sensor.example_car_live_telemetry_fresh` | At least one accepted measurement is recent |
 | `binary_sensor.example_car_live_connected` | Latest matching receiver connection event |
 | `sensor.example_car_live_battery` | BatteryLevel percentage; disabled initially |
@@ -81,38 +84,45 @@ identifiers independent of the native Tesla Fleet integration. Keep each slug
 stable for the same physical vehicle.
 
 Each field retains its own source timestamp. A speed update cannot make an old
-GPS fix fresh. Explicit invalid measurements and invalid coordinate ranges make
-the field unavailable. The bridge rejects unknown vehicles, envelope/topic VIN
+GPS fix fresh. Explicit invalid measurements make live fields unavailable and GPS freshness
+false; the last valid GPS coordinates and their timestamp remain intact. The bridge rejects unknown vehicles, envelope/topic VIN
 mismatches, retained input, resent records, delayed records, excessive future
 timestamps, and duplicate/out-of-order field observations. Exact nanosecond
 ordering survives bridge restarts. An expired fix cannot become fresh again
 from clock correction or another field's update.
 
-Location and speed become unavailable after their freshness limit, checked every
-`tick_seconds`. Fleet Telemetry sends changed values: a stationary vehicle can
-have a quiet GPS field while its connection remains open. Consequently, a quiet
-parked location intentionally becomes unavailable; **connected** does not
-expire merely because GPS is unchanged. **Telemetry fresh** describes recent
-observations, while **connected** describes the last receiver connection event.
-Neither metric is a guarantee of the current physical vehicle state.
+Location stays available after its freshness limit or a vehicle disconnect. Its
+`observed_at` attribute always identifies the original fix, not the restore or
+receipt time. Speed still expires after the freshness limit. Fleet Telemetry
+sends changed values: a parked car can have quiet GPS while connected.
+`location_fresh` distinguishes recent GPS from a saved position; battery or speed
+updates cannot turn it on. `connected` describes the receiver connection, and
+`telemetry_fresh` describes any recent supported observation.
 
-The bridge never publishes `home` or `not_home` to the GPS tracker, and never
-maps an offline connection to away. Its availability becomes unavailable when
-the fix is stale or the live path disconnects. For arrival automations, use this
-tracker as the sole vehicle location source, require a fresh fix, and avoid
-treating `unknown`/`unavailable` recovery as proof of an arrival. Proximity
-distance/direction still depend on the freshness of the selected tracker.
+The bridge never publishes `home` or `not_home`, or maps an offline connection
+to away. For arrival automations require `location_fresh=on`, a recent GPS
+`observed_at`, and a real previous numeric distance/known zone outside the arrival
+boundary. A startup or restored position is not proof of arrival. Proximity
+calculations using the tracker describe the last known position when GPS is old.
+
+State schema 2 restores the last valid position after restart, with GPS freshness
+off until a newer accepted observation arrives. Schema 1 timestamp fences migrate
+without being discarded. When the app has location history enabled, missing
+last-known fixes are seeded from the newest valid source timestamp in that car's
+private archive, including imported Recorder snapshots. Invalid/future records,
+wrong aliases, symlinks and incomplete tails are ignored. This recovery does not
+replay history into the live measurement stream or mark archived samples fresh.
+Existing saved fixes skip archive scanning on subsequent starts.
 
 ## Reconnect and privacy
 
-- Discovery is retained at QoS 1. GPS and scalar states are non-retained at QoS
-  0, so Paho cannot replay old in-flight GPS messages after reconnect. Timestamp
-  and availability diagnostics may be retained, always with their source time.
-  Loss of a live state is recovered by a later new measurement, never by
-  replaying a previous GPS fix as current.
-- A retained MQTT last will marks the bridge unavailable on connection loss.
-  Broker reconnect and Home Assistant's birth message republish discovery and
-  invalidate cached live measurements until new source timestamps arrive.
+- Discovery and last-known GPS are retained at QoS 1. Scalar live values remain
+  non-retained at QoS 0. GPS carries its original source timestamp; MQTT delivery
+  or restoration must never be used as its observation time.
+- A retained MQTT last will marks live diagnostics unavailable on bridge loss.
+  Last-known GPS availability is independent of that live-path status. Broker
+  reconnect and Home Assistant birth restore the last position with freshness
+  off and invalidate other live measurements until newer source timestamps arrive.
   Connection status is unknown until a new connection event after resync.
 - Connectivity events are fenced by event time and connection ID; a delayed
   disconnect for a previous connection cannot take down a newer session.
@@ -123,8 +133,8 @@ distance/direction still depend on the freshness of the selected tracker.
   Raw payloads, coordinates, VINs, MQTT credentials, and connection IDs are never
   logged. Do not enable Paho packet logging or raw receiver logging.
 - MQTT receipt is not end-to-end vehicle-to-Home-Assistant durability. Receiver
-  reliable ACK confirms broker acceptance; this bridge intentionally prioritizes
-  current observations over replaying a location after an outage.
+  reliable ACK confirms broker acceptance; this bridge persists its latest accepted fix separately from
+  the optional full receiver archive.
 
 ## Verification
 
@@ -135,7 +145,7 @@ python3 -m unittest -v test_bridge.py test_runtime.py
 Run from this directory. Unit tests use synthetic identity/coordinates and
 require only Python. The runtime smoke test requires `requirements.txt`, starts
 the real Paho client against a test peer bound to loopback, disconnects it, and
-verifies subscription/discovery recovery without GPS replay. No Tesla, Home
+verifies subscription/discovery recovery and stale last-position restoration. No Tesla, Home
 Assistant, or production broker is contacted. This does not replace checking
 actual Home Assistant discovery and live vehicle updates after deployment.
 

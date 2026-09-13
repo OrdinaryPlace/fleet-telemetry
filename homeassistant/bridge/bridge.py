@@ -2,7 +2,8 @@
 """Privacy-conscious Fleet Telemetry envelope to Home Assistant MQTT bridge.
 
 Only allowlisted vehicles and explicitly supported fields are published. No raw
-records, vehicle identifiers, coordinates, or credentials are logged or stored.
+records, vehicle identifiers, coordinates, or credentials are logged. The last
+valid GPS fix is persisted privately, independently of live measurement freshness.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import time
 from typing import Any, Callable
 
 LOGGER = logging.getLogger("fleet_bridge")
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAX_PAYLOAD_BYTES = 256 * 1024
 SUPPORTED_FIELDS = {"Location": "location", "VehicleSpeed": "speed", "BatteryLevel": "battery", "Soc": "usable_battery", "Gear": "gear"}
 NUMBER_KEYS = {"double_value", "float_value", "int_value", "long_value", "string_value"}
@@ -150,6 +151,7 @@ class Vehicle:
     connection_id: str | None = None
     connection_time: int = 0
     connected: bool | None = None
+    last_location: Measurement | None = None
 
 
 class Bridge:
@@ -167,13 +169,14 @@ class Bridge:
         self.availability: dict[str, str] = {}
         self.counters = Counter()
         self.load_fences()
+        self.restore_locations_from_history()
 
     def load_fences(self):
         state_path = self.config.get("state_file")
         if not state_path or not Path(state_path).exists():
             return
         state = json.loads(Path(state_path).read_text())
-        if not isinstance(state, dict) or state.get("version") != 1 or not isinstance(state.get("vehicles"), dict):
+        if not isinstance(state, dict) or state.get("version") not in (1, 2) or not isinstance(state.get("vehicles"), dict):
             raise ValueError("invalid timestamp state")
         for vehicle in self.vehicles.values():
             saved = state["vehicles"].get(vehicle.slug, {})
@@ -187,15 +190,74 @@ class Bridge:
                 vehicle.last_update = timestamp(saved["last_update"])
             if saved.get("connection_time") is not None:
                 vehicle.connection_time = timestamp(saved["connection_time"])
+            if saved.get("last_location") is not None:
+                location = saved["last_location"]
+                value = decode_value("Location", {"location_value": location["value"]})
+                vehicle.last_location = Measurement(timestamp(location["observed_at"]), 0, value)
+                self.fence_restored_location(vehicle)
+
+    def fence_restored_location(self, vehicle: Vehicle):
+        """Restore display data without claiming a new live GPS observation."""
+        previous = vehicle.measurements.get("location")
+        observed = vehicle.last_location.observed
+        vehicle.measurements["location"] = Measurement(max(previous.observed, observed) if previous else observed, self.monotonic(), None)
+
+    def restore_locations_from_history(self):
+        """Seed missing fixes on upgrade from the optional private archive.
+
+        History can be delayed, resent, or imported Recorder snapshots. Use the
+        newest valid source timestamp and never mark these observations fresh.
+        Once a fix is persisted, ordinary restarts do not scan its history.
+        """
+        directory = self.config.get("location_history_directory")
+        if not directory:
+            return
+        root = Path(directory)
+        if not root.exists():
+            return
+        changed = False
+        for vehicle in self.vehicles.values():
+            if vehicle.last_location is not None:
+                continue
+            pattern = re.compile(r"\d{4}-\d{2}-\d{2}_" + re.escape(vehicle.slug) + r"(?:_recorder)?\.ndjson")
+            for path in root.iterdir():
+                if not pattern.fullmatch(path.name) or path.is_symlink() or not path.is_file():
+                    continue
+                with path.open("rb") as handle:
+                    while raw := handle.readline(MAX_PAYLOAD_BYTES + 1):
+                        if len(raw) > MAX_PAYLOAD_BYTES:
+                            while raw and not raw.endswith(b"\n"):
+                                raw = handle.readline(MAX_PAYLOAD_BYTES + 1)
+                            continue
+                        if not raw.endswith(b"\n"):
+                            continue  # An incomplete append is not a saved fix.
+                        try:
+                            row = json.loads(raw)
+                            if row.get("schema_version") != 1 or row.get("vehicle") != vehicle.slug:
+                                continue
+                            observed = timestamp(row.get("source_time"))
+                            if observed / NANOSECOND > self.wall_clock() + self.config["future_tolerance_seconds"]:
+                                continue
+                            value = decode_value("Location", row.get("location"))
+                            if value is not None and (vehicle.last_location is None or observed > vehicle.last_location.observed):
+                                vehicle.last_location = Measurement(observed, 0, value)
+                        except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError, UnicodeError):
+                            continue
+            if vehicle.last_location is not None:
+                self.fence_restored_location(vehicle)
+                changed = True
+        if changed:
+            self.persist_fences()
 
     def persist_fences(self):
         state_path = self.config.get("state_file")
         if not state_path:
             return
-        state = {"version": 1, "vehicles": {vehicle.slug: {
+        state = {"version": 2, "vehicles": {vehicle.slug: {
             "fields": {suffix: iso_time(measurement.observed) for suffix, measurement in vehicle.measurements.items()},
             "last_update": iso_time(vehicle.last_update) if vehicle.last_update is not None else None,
             "connection_time": iso_time(vehicle.connection_time) if vehicle.connection_time else None,
+            "last_location": {"value": vehicle.last_location.value, "observed_at": iso_time(vehicle.last_location.observed)} if vehicle.last_location else None,
         } for vehicle in self.vehicles.values()}}
         destination = Path(state_path)
         temporary = None
@@ -257,10 +319,13 @@ class Bridge:
                 ("sensor", "gear", {"state_topic": f"{base}/gear/state", "icon": "mdi:car-shift-pattern", "enabled_by_default": False}),
                 ("sensor", "last_update", {"state_topic": f"{base}/last_update/state", "device_class": "timestamp", "entity_category": "diagnostic"}),
                 ("binary_sensor", "telemetry_fresh", {"state_topic": f"{base}/telemetry_fresh/state", "device_class": "connectivity", "entity_category": "diagnostic"}),
+                ("binary_sensor", "location_fresh", {"state_topic": f"{base}/location_fresh/state", "icon": "mdi:map-clock", "entity_category": "diagnostic"}),
                 ("binary_sensor", "connected", {"state_topic": f"{base}/connected/state", "device_class": "connectivity", "entity_category": "diagnostic"}),
             ]
             for component, suffix, specific in specs:
                 availability = [{"topic": self.status_topic}]
+                if suffix == "location":
+                    availability = []  # Last-known coordinates survive a bridge outage.
                 if suffix in SUPPORTED_FIELDS.values() or suffix == "connected":
                     availability.append({"topic": f"{base}/{suffix}/availability"})
                 discovery = {
@@ -278,21 +343,36 @@ class Bridge:
                 self.send(f"{self.discovery_prefix}/{component}/tesla_live_{vehicle.slug}/{suffix}/config", discovery, retain=True, qos=1)
 
     def resync(self):
-        """Do not restore a GPS fix across broker/HA restarts as a new arrival."""
+        """Restore the last-known position, with freshness off until a new fix."""
         self.available(self.status_topic, False, force=True)
         for vehicle in self.vehicles.values():
             for measurement in vehicle.measurements.values():
-                measurement.value = None  # Preserve timestamp fences, never replay GPS.
+                measurement.value = None
             vehicle.last_received = None
             vehicle.connected = None
             for suffix in (*SUPPORTED_FIELDS.values(), "connected"):
-                self.available(f"{self.base(vehicle)}/{suffix}/availability", False, force=True)
+                if suffix != "location":
+                    self.available(f"{self.base(vehicle)}/{suffix}/availability", False, force=True)
             self.send(f"{self.base(vehicle)}/telemetry_fresh/state", "OFF", retain=True)
+            self.send(f"{self.base(vehicle)}/location_fresh/state", "OFF", retain=True, qos=1)
         self.discoveries()
         for vehicle in self.vehicles.values():
+            self.publish_location(vehicle)
             if vehicle.last_update is not None:
                 self.send(f"{self.base(vehicle)}/last_update/state", iso_time(vehicle.last_update), retain=True)
         self.available(self.status_topic, True, force=True)
+
+    def publish_location(self, vehicle: Vehicle):
+        base = self.base(vehicle)
+        if vehicle.last_location is not None:
+            fix = vehicle.last_location
+            self.send(f"{base}/location/state", {**fix.value, "observed_at": iso_time(fix.observed)}, retain=True, qos=1)
+        self.available(f"{base}/location/availability", vehicle.last_location is not None, force=True)
+
+    def publish_location_freshness(self, vehicle: Vehicle):
+        measurement = vehicle.measurements.get("location")
+        fresh = measurement is not None and measurement.value is not None and self.fresh(measurement.observed, measurement.received)
+        self.send(f"{self.base(vehicle)}/location_fresh/state", "ON" if fresh else "OFF", retain=True, qos=1)
 
     def receive(self, topic: str, payload: bytes, retained=False):
         # Reject retained data even if a previous receiver used different settings.
@@ -368,6 +448,8 @@ class Bridge:
                 continue
             measurement = Measurement(observed, self.monotonic(), value)
             vehicle.measurements[suffix] = measurement
+            if suffix == "location" and value is not None:
+                vehicle.last_location = Measurement(observed, 0, dict(value))
             changes.append((suffix, value))
         if changes:
             if vehicle.last_update is None or observed >= vehicle.last_update:
@@ -376,12 +458,13 @@ class Bridge:
             self.persist_fences()
         for suffix, value in changes:
             base = f"{self.base(vehicle)}/{suffix}"
+            if suffix == "location":
+                self.publish_location_freshness(vehicle)
+                self.publish_location(vehicle)
+                continue
             if value is not None:
-                if suffix == "location":
-                    self.send(f"{base}/state", {**value, "observed_at": iso_time(observed)})
-                else:
-                    self.send(f"{base}/state", str(value))
-                    self.send(f"{base}/attributes", {"observed_at": iso_time(observed)})
+                self.send(f"{base}/state", str(value))
+                self.send(f"{base}/attributes", {"observed_at": iso_time(observed)})
             self.available(f"{base}/availability", value is not None)
         if changes:
             self.counters["accepted_records"] += 1
@@ -424,7 +507,10 @@ class Bridge:
                 available = measurement is not None and measurement.value is not None and self.fresh(measurement.observed, measurement.received)
                 if measurement is not None and not available:
                     measurement.value = None  # Clock corrections must not revive an expired fix.
+                if suffix == "location":
+                    available = vehicle.last_location is not None
                 self.available(f"{self.base(vehicle)}/{suffix}/availability", available)
+            self.publish_location_freshness(vehicle)
             self.send(f"{self.base(vehicle)}/telemetry_fresh/state", "ON" if self.fresh(vehicle.last_update, vehicle.last_received) else "OFF", retain=True)
 
     def shutdown(self):

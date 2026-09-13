@@ -192,6 +192,7 @@ def configurations(options: dict, mqtt: dict) -> tuple[dict, dict]:
         "max_transport_delay_seconds": options.get("max_transport_delay_seconds", 30),
         "future_tolerance_seconds": 5, "tick_seconds": 5,
         "state_file": "/data/bridge-state.json",
+        "location_history_directory": "/share/tesla-fleet-location-history" if options.get("location_history", False) else None,
     }
     return receiver, bridge
 

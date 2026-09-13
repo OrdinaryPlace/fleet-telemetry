@@ -150,7 +150,7 @@ class RuntimeTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("timed out waiting for isolated MQTT behavior")
 
-    def test_reconnect_resubscribe_discovery_without_gps_replay(self):
+    def test_reconnect_restores_last_position_with_freshness_off(self):
         peer = LoopbackPeer()
         process = None
         try:
@@ -173,23 +173,28 @@ class RuntimeTests(unittest.TestCase):
 
                 peer.publish(f"test_receiver/{TEST_VIN}/records", sample(source_time))
                 self.wait_for(lambda: len(locations(1)) == 1)
-                self.assertEqual(locations(1)[0][3:], (0, False))
+                self.assertEqual(locations(1)[0][3:], (1, True))
                 peer.disconnect()
                 self.wait_for(lambda: len(peer.subscriptions) == 2)
                 self.assertEqual(peer.subscriptions[0][1], peer.subscriptions[1][1])
                 time.sleep(0.1)
-                self.assertEqual(locations(2), [])
+                self.assertEqual(len(locations(2)), 1)
+                self.assertEqual(json.loads(locations(2)[0][2])["observed_at"], iso_time(source_time))
+                freshness = [item[2] for item in peer.publications if item[0] == 2 and item[1].endswith("/location_fresh/state")]
+                self.assertTrue(freshness)
+                self.assertEqual(freshness[-1], "OFF")
                 second_time = time.time_ns()
                 peer.publish(f"test_receiver/{TEST_VIN}/records", sample(second_time))
-                self.wait_for(lambda: len(locations(2)) == 1)
+                self.wait_for(lambda: len(locations(2)) == 2)
                 discovery_before = sum(item[1].endswith("/config") for item in peer.publications)
                 peer.publish("homeassistant/status", b"online")
-                self.wait_for(lambda: sum(item[1].endswith("/config") for item in peer.publications) == discovery_before + 8)
+                self.wait_for(lambda: sum(item[1].endswith("/config") for item in peer.publications) == discovery_before + 9)
+                self.wait_for(lambda: len(locations(2)) == 3)
                 peer.publish(f"test_receiver/{TEST_VIN}/records", sample(second_time))
                 time.sleep(0.1)
-                self.assertEqual(len(locations(2)), 1)
+                self.assertEqual(len(locations(2)), 3)
                 peer.publish(f"test_receiver/{TEST_VIN}/records", sample(time.time_ns()))
-                self.wait_for(lambda: len(locations(2)) == 2)
+                self.wait_for(lambda: len(locations(2)) == 4)
                 process.terminate()
                 logs, _ = process.communicate(timeout=5)
                 self.assertEqual(process.returncode, 0)

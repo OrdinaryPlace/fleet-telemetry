@@ -109,7 +109,7 @@ deployment.
 
 ## Optional permanent location archive (receiver 0.2.0)
 
-Set `location_history: true` to retain every received Location datum for the configured vehicles. The default is false. The receiver saves UTC source and receipt times, the configured vehicle alias, resend status, and the complete typed Location value before publishing to MQTT or acknowledging the vehicle. Invalid measurements and delayed/resend records are kept; retransmissions can appear more than once. No VIN or other telemetry fields are written to the archive. Live entity freshness/replay protection remains unchanged.
+Set `location_history: true` to retain every received Location datum for the configured vehicles. The default is false. The receiver saves UTC source and receipt times, the configured vehicle alias, resend status, and the complete typed Location value before publishing to MQTT or acknowledging the vehicle. Invalid measurements and delayed/resend records are kept; retransmissions can appear more than once. No VIN or other telemetry fields are written to the archive. GPS freshness/replay protection remains independent of the last-known display introduced in receiver 0.3.0.
 
 The private directory `/share/tesla-fleet-location-history` contains daily per-vehicle NDJSON files, mode 600 inside a mode 700 directory. There is no automatic purge. Include the **share** folder in HA backups; backing up only the app does not include a shared-folder archive. These files contain precise locations: keep them outside Git, static web directories, and ordinary logs. A full disk or failed write prevents the affected location record from being acknowledged; restore storage health rather than deleting history automatically.
 

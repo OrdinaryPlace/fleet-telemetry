@@ -263,8 +263,10 @@ class ArchiveConfigurationTests(unittest.TestCase):
     def test_archive_is_opt_in_and_uses_allowlisted_aliases(self):
         options={'hostname':'telemetry.example.test','vehicles':[{'vin':'SYNTHETIC_ID','slug':'test_car','name':'Test car'}]}
         service={'host':'mqtt','port':1883,'username':'synthetic_user','password':'synthetic_password'}
-        receiver,_=runtime.configurations(options,service)
+        receiver,bridge=runtime.configurations(options,service)
         self.assertIsNone(receiver['mqtt']['location_archive'])
+        self.assertIsNone(bridge['location_history_directory'])
         options['location_history']=True
-        receiver,_=runtime.configurations(options,service)
+        receiver,bridge=runtime.configurations(options,service)
         self.assertEqual(receiver['mqtt']['location_archive'],{'directory':'/share/tesla-fleet-location-history','vehicles':{'SYNTHETIC_ID':'test_car'}})
+        self.assertEqual(bridge['location_history_directory'], '/share/tesla-fleet-location-history')
