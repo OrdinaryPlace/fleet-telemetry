@@ -106,3 +106,13 @@ Restore this application's previous telemetry configuration from its backup when
 necessary. Preserve native Fleet credentials, virtual key, controls, existing HA
 routes and other MQTT consumers. Make verified HA backups before and after
 deployment.
+
+## Optional permanent location archive (receiver 0.2.0)
+
+Set `location_history: true` to retain every received Location datum for the configured vehicles. The default is false. The receiver saves UTC source and receipt times, the configured vehicle alias, resend status, and the complete typed Location value before publishing to MQTT or acknowledging the vehicle. Invalid measurements and delayed/resend records are kept; retransmissions can appear more than once. No VIN or other telemetry fields are written to the archive. Live entity freshness/replay protection remains unchanged.
+
+The private directory `/share/tesla-fleet-location-history` contains daily per-vehicle NDJSON files, mode 600 inside a mode 700 directory. There is no automatic purge. Include the **share** folder in HA backups; backing up only the app does not include a shared-folder archive. These files contain precise locations: keep them outside Git, static web directories, and ordinary logs. A full disk or failed write prevents the affected location record from being acknowledged; restore storage health rather than deleting history automatically.
+
+Open the app's **Open Web UI** to download daily CSV or original NDJSON through authenticated Home Assistant Ingress. Port 8099 has no host port mapping and rejects requests not originating from Supervisor Ingress. No new WAN port is needed. CSV preserves zero coordinates, leaves invalid coordinates empty, and skips interrupted rows; the original download preserves all bytes for recovery. Raw files append after a restart and separate incomplete tails without overwriting them.
+
+This archive starts when enabled; it cannot recreate GPS records that were never received. Home Assistant Recorder history can be imported separately as clearly identified snapshots, with its original state timestamp distinguished from a Tesla source timestamp.

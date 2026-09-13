@@ -10,7 +10,7 @@ import subprocess
 
 
 APP_FILES = {
-    "receiver": ("Dockerfile", "config.yaml", "runtime.py"),
+    "receiver": ("Dockerfile", "config.yaml", "runtime.py", "archive_web.py"),
     "commissioner": ("Dockerfile", "config.yaml", "commissioner.py", "entrypoint.py", "ha_support.py"),
 }
 BRIDGE_FILES = ("bridge.py", "requirements.txt")

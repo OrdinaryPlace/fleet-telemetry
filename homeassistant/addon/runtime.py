@@ -178,7 +178,9 @@ def configurations(options: dict, mqtt: dict) -> tuple[dict, dict]:
         "mqtt": {"broker": f'{mqtt["host"]}:{mqtt["port"]}', "username": mqtt["username"],
                  "password": mqtt["password"], "client_id": "tesla-fleet-receiver",
                  "topic_base": "tesla_raw", "qos": 1, "retained": False,
-                 "publish_vehicle_records": True},
+                 "publish_vehicle_records": True,
+                 "location_archive": {"directory": "/share/tesla-fleet-location-history",
+                                      "vehicles": {v["vin"]: v["slug"] for v in vehicles}} if options.get("location_history", False) else None},
         "tls": {"server_cert": "/ssl/tesla-fleet-stream/server.pem", "server_key": "/ssl/tesla-fleet-stream/server.key"},
     }
     bridge = {
@@ -261,6 +263,7 @@ def main() -> int:
     stopped = threading.Event()
     try:
         processes.append(start_receiver(child_env))
+        processes.append(subprocess.Popen([sys.executable, "/opt/archive_web.py"], env=child_env))
         next_tls_check = time.monotonic() + TLS_RECHECK_SECONDS
         for signum in (signal.SIGTERM, signal.SIGINT):
             signal.signal(signum, lambda *_: stopped.set())

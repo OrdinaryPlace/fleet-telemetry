@@ -113,3 +113,7 @@ Record publishing uses the configured QoS and participates in the same publish t
 - Each field is published as a separate MQTT message, which can increase network traffic but allows for more granular subscriptions.
 - QoS levels can be configured to balance between performance and reliability.
 - The producer uses goroutines to handle message publishing asynchronously.
+
+### Optional location archive
+
+`location_archive` accepts an absolute `directory` and a `vehicles` map from authenticated vehicle ID to unique safe alias. It is disabled when omitted. Every Location datum is appended and synced before MQTT publication and reliable ACK; failures withhold both. Source/receipt timestamps, resend flags and complete typed Location values are retained without VINs or unrelated fields. The caller owns backup, disk-capacity monitoring, access control, and retention. Files never auto-purge. Retries may create duplicate rows; source timestamps and resend metadata support downstream interpretation.

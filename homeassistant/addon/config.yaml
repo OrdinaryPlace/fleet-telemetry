@@ -1,5 +1,5 @@
 name: Tesla Fleet Stream
-version: 0.1.0
+version: 0.2.0
 slug: tesla_fleet_stream
 description: Tesla's authenticated telemetry receiver with timestamp-aware Home Assistant MQTT entities
 url: https://github.com/OrdinaryPlace/fleet-telemetry
@@ -8,6 +8,9 @@ arch:
 startup: application
 boot: auto
 init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:map-marker-path
 hassio_api: true
 services:
   - mqtt:need
@@ -16,14 +19,18 @@ ports:
 ports_description:
   8443/tcp: Tesla vehicle mTLS telemetry only
 map:
+  - type: share
+    read_only: false
   - type: ssl
     read_only: false
 options:
   hostname: telemetry.example.com
   vehicles: []
+  location_history: false
   freshness_seconds: 90
   max_transport_delay_seconds: 30
 schema:
+  location_history: bool
   hostname: str
   vehicles:
     - vin: str

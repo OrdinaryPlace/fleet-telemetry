@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
@@ -185,4 +187,26 @@ var _ = Describe("MQTT vehicle records", func() {
 		Expect(ackChan).NotTo(Receive())
 		Expect(loggerHook.LastEntry().Message).To(Equal("mqtt_process_payload_error"))
 	})
+	It("withholds publication and ACK if a required location archive write fails", func() {
+		directory := filepath.Join(GinkgoT().TempDir(), "history")
+		config.LocationArchive = &mqtt.LocationArchiveConfig{Directory: directory, Vehicles: map[string]string{"TEST123": "test_car"}}
+		logger, _ := logrus.NoOpLogger()
+		archivedProducer, err := mqtt.NewProducer(context.Background(), config, metrics.NewCollector(nil, logger), "test_namespace", airbrake.NewAirbrakeHandler(nil), ackChan, map[string]interface{}{"V": true}, logger)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.Remove(directory)).To(Succeed())
+		rec := newRecord(&protos.Payload{Data: []*protos.Datum{{Key: protos.Field_Location, Value: &protos.Value{Value: &protos.Value_LocationValue{LocationValue: &protos.LocationValue{Latitude: 0, Longitude: 0}}}}}})
+		archivedProducer.Produce(rec)
+		Expect(ackChan).NotTo(Receive())
+		Expect(publishedTopics).To(BeEmpty())
+		Expect(os.Mkdir(directory, 0700)).To(Succeed())
+		archivedProducer.Produce(rec)
+		Expect(ackChan).To(Receive(Equal(rec)))
+		files, err := filepath.Glob(filepath.Join(directory, "*.ndjson"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(files).To(HaveLen(1))
+		data, err := os.ReadFile(files[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring("latitude"))
+	})
+
 })

@@ -22,6 +22,7 @@ var (
 // Producer is a telemetry.Producer that sends records to an MQTT broker.
 type Producer struct {
 	client             pahomqtt.Client
+	locationArchive    *locationArchive
 	config             *Config
 	logger             *logrus.Logger
 	airbrakeHandler    *airbrake.Handler
@@ -33,19 +34,20 @@ type Producer struct {
 
 // Config holds the configuration for the MQTT producer.
 type Config struct {
-	Broker                string `json:"broker"`
-	ClientID              string `json:"client_id"`
-	Username              string `json:"username"`
-	Password              string `json:"password"`
-	TopicBase             string `json:"topic_base"`
-	QoS                   byte   `json:"qos"`
-	Retained              bool   `json:"retained"`
-	PublishVehicleRecords bool   `json:"publish_vehicle_records"`
-	ConnectTimeout        int    `json:"connect_timeout_ms"`
-	PublishTimeout        int    `json:"publish_timeout_ms"`
-	DisconnectTimeout     int    `json:"disconnect_timeout_ms"`
-	ConnectRetryInterval  int    `json:"connect_retry_interval_ms"`
-	KeepAlive             int    `json:"keep_alive_seconds"`
+	LocationArchive       *LocationArchiveConfig `json:"location_archive,omitempty"`
+	Broker                string                 `json:"broker"`
+	ClientID              string                 `json:"client_id"`
+	Username              string                 `json:"username"`
+	Password              string                 `json:"password"`
+	TopicBase             string                 `json:"topic_base"`
+	QoS                   byte                   `json:"qos"`
+	Retained              bool                   `json:"retained"`
+	PublishVehicleRecords bool                   `json:"publish_vehicle_records"`
+	ConnectTimeout        int                    `json:"connect_timeout_ms"`
+	PublishTimeout        int                    `json:"publish_timeout_ms"`
+	DisconnectTimeout     int                    `json:"disconnect_timeout_ms"`
+	ConnectRetryInterval  int                    `json:"connect_retry_interval_ms"`
+	KeepAlive             int                    `json:"keep_alive_seconds"`
 }
 
 // Metrics holds the metrics for the MQTT producer.
@@ -76,6 +78,10 @@ var PahoNewClient = pahomqtt.NewClient
 
 // NewProducer creates a new MQTT producer.
 func NewProducer(ctx context.Context, config *Config, metrics metrics.MetricCollector, namespace string, airbrakeHandler *airbrake.Handler, ackChan chan (*telemetry.Record), reliableAckTxTypes map[string]interface{}, logger *logrus.Logger) (telemetry.Producer, error) {
+	archive, err := newLocationArchive(config.LocationArchive)
+	if err != nil {
+		return nil, err
+	}
 	registerMetricsOnce(metrics)
 
 	// Set default values
@@ -114,6 +120,7 @@ func NewProducer(ctx context.Context, config *Config, metrics metrics.MetricColl
 
 	return &Producer{
 		client:             client,
+		locationArchive:    archive,
 		config:             config,
 		logger:             logger,
 		airbrakeHandler:    airbrakeHandler,
@@ -149,7 +156,9 @@ func (p *Producer) Produce(rec *telemetry.Record) {
 
 	switch payload := payload.(type) {
 	case *protos.Payload:
-		tokens, err = p.processVehicleFields(rec, payload)
+		if err = p.locationArchive.append(rec.Vin, payload); err == nil {
+			tokens, err = p.processVehicleFields(rec, payload)
+		}
 	case *protos.VehicleAlerts:
 		tokens, err = p.processVehicleAlerts(rec, payload)
 	case *protos.VehicleErrors:

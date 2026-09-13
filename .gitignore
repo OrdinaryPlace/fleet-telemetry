@@ -14,3 +14,8 @@ __pycache__/
 homeassistant/runtime/
 homeassistant/build/
 homeassistant/*.private.json
+
+# Private location archives and downloads must never enter source control.
+*.ndjson
+location-history/
+tesla-fleet-location-history/
