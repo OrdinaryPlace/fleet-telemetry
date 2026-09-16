@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 import time
+from datetime import timedelta
 
 from bridge import Bridge, NANOSECOND, iso_time
 from status_fields import SPECS, STATUS_CONFIG, decode_status
@@ -208,6 +209,27 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter.bind()
         self.assertEqual(self.updates[-1]['state'], 'offline')
         self.assertEqual(len(self.updates), 2)
+
+    async def test_shutdown_cleans_subscriptions_but_not_its_removed_one_shot(self):
+        cleaned = []
+        listener = {}
+        async def subscribe(*args):
+            return lambda: cleaned.append('mqtt')
+        def listen_once(event, callback):
+            listener['callback'] = callback
+            def unsubscribe():
+                if listener.get('removed'):
+                    raise AssertionError('one-shot already removed by HA')
+            return unsubscribe
+        self.hass.bus = SimpleNamespace(async_listen_once=listen_once)
+        self.Adapter.start.__globals__.update(mqtt=SimpleNamespace(async_subscribe=subscribe),
+            async_track_time_interval=lambda *args: lambda: cleaned.append('timer'),
+            timedelta=timedelta, EVENT_HOMEASSISTANT_STOP='stop')
+        await self.adapter.start()
+        listener['removed'] = True
+        listener['callback']()
+        self.assertEqual(cleaned, ['mqtt', 'mqtt', 'timer'])
+        self.assertEqual(self.adapter.unsub, [])
 
 
 if __name__ == '__main__': unittest.main()
