@@ -75,7 +75,9 @@ class StreamAdapter:
         # It reconnects to the coordinator after a supported native entry reload.
         self.unsub.append(async_track_time_interval(self.hass, self.bind, timedelta(seconds=15)))
         await self.bind()
-        self.unsub.append(self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.stop))
+        # HA removes a one-shot listener before calling it. Do not unsubscribe
+        # that same listener again from inside the stop callback.
+        self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.stop)
 
     async def bind(self, _now=None):
         # A reload or changed entry layout must immediately invalidate bindings.
