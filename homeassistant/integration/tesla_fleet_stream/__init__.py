@@ -125,12 +125,14 @@ class StreamAdapter:
         if not self.polling_disabled:
             self.status[slug] = "ready_to_disable_polling"
             return
-        marker = (id(coordinator), model.revision, self.bridge_available)
-        if self.last_applied.get(slug) == marker and coordinator.data.get("_tesla_stream_source") == "fleet_telemetry":
-            return
         data = model.native_data(coordinator.data, time.time())
         if not self.bridge_available:
             data["state"] = "offline"
+        # Fresh samples prove online only for the freshness window when no
+        # connection event is known. Let the local timer expire that inference.
+        marker = (id(coordinator), model.revision, self.bridge_available, data["state"])
+        if self.last_applied.get(slug) == marker and coordinator.data.get("_tesla_stream_source") == "fleet_telemetry":
+            return
         coordinator.updated_once = True
         coordinator.async_set_updated_data(data)
         self.last_applied[slug] = marker

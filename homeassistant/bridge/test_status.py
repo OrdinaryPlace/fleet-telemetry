@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 import time
 
@@ -194,6 +195,19 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.bind()
         self.assertEqual(self.updates, [])
         self.assertEqual(self.adapter.status['test_car'], 'waiting_for_stream_baseline')
+
+    async def test_inferred_online_expires_without_new_stream_or_vehicle_reads(self):
+        self.entry.pref_disable_polling = True
+        self.adapter.bridge_available = True
+        self.adapter.models['test_car'].connection = None
+        with patch.object(time, 'time', return_value=1700000001):
+            await self.adapter.bind()
+        self.assertEqual(self.updates[-1]['state'], 'online')
+        self.coordinator.data = self.updates[-1]
+        with patch.object(time, 'time', return_value=1700000091):
+            await self.adapter.bind()
+        self.assertEqual(self.updates[-1]['state'], 'offline')
+        self.assertEqual(len(self.updates), 2)
 
 
 if __name__ == '__main__': unittest.main()

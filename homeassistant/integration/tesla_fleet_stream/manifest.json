@@ -1,7 +1,7 @@
 {
   "domain": "tesla_fleet_stream",
   "name": "Tesla Fleet Stream status",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "documentation": "https://github.com/OrdinaryPlace/fleet-telemetry/tree/ordinaryplace/home-assistant-streaming/homeassistant",
   "codeowners": [],
   "dependencies": ["mqtt"],
