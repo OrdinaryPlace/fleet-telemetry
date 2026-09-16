@@ -44,6 +44,7 @@ for field, key, low, high, interval in (
     ("Odometer", "vehicle_state_odometer", 0, 10000000, 60),
     ("GpsHeading", "drive_state_heading", 0, 360, 10),
     ("MilesToArrival", "drive_state_active_route_miles_to_arrival", 0, 30000, 10),
+    ("EstimatedHoursToChargeTermination", "charge_state_hours_to_charge_limit", 0, 1000, 30),
     ("MinutesToArrival", "drive_state_active_route_minutes_to_arrival", 0, 100000, 10),
     ("RouteTrafficMinutesDelay", "drive_state_active_route_traffic_minutes_delay", 0, 10000, 30),
     ("ExpectedEnergyPercentAtTripArrival", "drive_state_active_route_energy_at_arrival", -100, 100, 30),
@@ -81,6 +82,8 @@ for field, key in (
     ("ChargePortDoorOpen", "charge_state_charge_port_door_open"),
     ("ChargeEnableRequest", "charge_state_charge_enable_request"),
     ("FastChargerPresent", "charge_state_fast_charger_present"),
+    ("HomelinkNearby", "vehicle_state_homelink_nearby"),
+    ("LocatedAtHome", "vehicle_state_located_at_home"),
     ("Locked", "vehicle_state_locked"),
     ("DriverSeatOccupied", "vehicle_state_is_user_present"),
     ("RightHandDrive", "vehicle_config_rhd"),
@@ -133,7 +136,8 @@ enum("MediaPlaybackStatus", "vehicle_state_media_info_media_playback_status", "m
 DOORS = {"DriverFront": "df", "DriverRear": "dr", "PassengerFront": "pf",
          "PassengerRear": "pr", "TrunkFront": "ft", "TrunkRear": "rt"}
 SPECS["DoorState"] = {"keys": tuple("vehicle_state_" + v for v in DOORS.values()), "kind": "doors", "interval": 5}
-for field, prefix in (("Location", "drive_state_"), ("DestinationLocation", "drive_state_active_route_")):
+for field, prefix in (("Location", "drive_state_"), ("DestinationLocation", "drive_state_active_route_"),
+                      ("OriginLocation", "drive_state_active_route_origin_")):
     SPECS[field] = {"keys": (prefix + "latitude", prefix + "longitude"), "kind": "location", "interval": 5}
 SPECS["HvacPower"] = {"keys": ("climate_state_is_climate_on", "climate_state_is_preconditioning",
                                 "climate_state_cabin_overheat_protection_actively_cooling"), "kind": "hvac", "interval": 5}
@@ -144,7 +148,7 @@ for field in ("ACChargingPower", "DCChargingPower"):
 
 STATUS_CONFIG = {name: {"interval_seconds": spec["interval"]} for name, spec in SPECS.items()}
 NATIVE_KEYS = frozenset(k for spec in SPECS.values() for k in spec["keys"])
-NULLABLE_FIELDS = frozenset({"DestinationLocation", "DestinationName", "MilesToArrival", "MinutesToArrival",
+NULLABLE_FIELDS = frozenset({"OriginLocation", "EstimatedHoursToChargeTermination", "HomelinkNearby", "LocatedAtHome", "DestinationLocation", "DestinationName", "MilesToArrival", "MinutesToArrival",
     "ExpectedEnergyPercentAtTripArrival", "RouteTrafficMinutesDelay", "SoftwareUpdateVersion",
     "ChargingCableType", "TimeToFullCharge", "FastChargerType"})
 

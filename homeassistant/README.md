@@ -117,7 +117,7 @@ necessary. Preserve native Fleet credentials, virtual key, controls, existing HA
 routes and other MQTT consumers. Make verified HA backups before and after
 deployment.
 
-## Stream all supported status (receiver 0.5.0, setup 0.3.0)
+## Stream all supported status (receiver 0.6.0, setup 0.4.0)
 
 The optional `all_status: true` setup option adds the reviewed field catalog in
 `bridge/status_fields.py`. It preserves the existing destination, CA, fields and
@@ -135,11 +135,26 @@ The private state file now uses schema 3 and reads schemas 1 and 2 for upgrade.
 It contains sensitive last-reported status and positions: protect it like the
 location archive and never publish its contents or broker messages in diagnostics.
 
-The optional `tesla_fleet_stream` companion (0.1.2) updates the **existing native
+The optional `tesla_fleet_stream` companion (0.2.0) updates the **existing native
 Fleet coordinators** from these snapshots, preserving entity IDs and native
 commands. This adapter is tested against Home Assistant Core 2026.9.2; its native
 runtime layout is not a stable extension API and must be reviewed on Core upgrades.
 It never calls Tesla, changes credentials, signs commands or overwrites REST states.
+
+The catalog requests 90 status fields plus the two existing belt fields. Companion
+0.2.0 adds read-only duration sensors for minutes to arrival and hours to the desired
+charge limit, binary sensors for HomeLink proximity and Tesla profile home, and a
+route-origin tracker. Each keeps its original `observed_at` and invalid status.
+`OriginLocation` is the navigation route origin, never the car's current GPS;
+`LocatedAtHome` uses the active Tesla driver's saved home, not Home Assistant's
+home zone. Unreported/invalid origin has no coordinates and is unavailable.
+These entities do not drive arrival activities. Durations show the last reported
+estimate, not a fabricated countdown. Media, four tire pressures, four soft warnings,
+gear and versions remain mapped to the existing native entities/version sensors.
+
+When extending this catalog, install the matching companion and restart Core
+**before** configuring the new telemetry fields. Older companions deliberately
+reject snapshots containing unrecognized fields. Native polling stays disabled.
 
 Export the committed integration allowlist with:
 

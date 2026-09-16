@@ -134,6 +134,59 @@ class StatusTests(unittest.TestCase):
             restored.receive(f'test_receiver/{TEST_VIN}/records', json.dumps(record).encode())
             self.assertEqual(restored.vehicles[TEST_VIN].status_fields, original)
 
+    def test_additional_fields_are_distinct_and_keep_invalid_unknown(self):
+        self.assertEqual(decode_status('EstimatedHoursToChargeTermination', {'double_value': 1.5}),
+                         {'charge_state_hours_to_charge_limit': 1.5})
+        self.assertEqual(decode_status('OriginLocation', {'location_value': {'latitude': 10, 'longitude': 20}}),
+                         {'drive_state_active_route_origin_latitude': 10, 'drive_state_active_route_origin_longitude': 20})
+        for name in ('LocatedAtHome', 'HomelinkNearby'):
+            self.assertEqual(list(decode_status(name, {'boolean_value': False}).values()), [False])
+            self.assertEqual(list(decode_status(name, {'invalid': True}).values()), [None])
+        self.assertEqual(len(STATUS_CONFIG), 90)
+
+    def test_extra_entities_preserve_source_and_clear_invalid_without_invented_location(self):
+        # Execute the actual entity classes with the HA entity bases isolated.
+        class Entity: pass
+        class SensorEntity(Entity): pass
+        class BinarySensorEntity(Entity): pass
+        class TrackerEntity(Entity): pass
+        from datetime import datetime, timezone
+        scope = dict(Entity=Entity, SensorEntity=SensorEntity, BinarySensorEntity=BinarySensorEntity,
+                     TrackerEntity=TrackerEntity, SPECS=SPECS, datetime=datetime, timezone=timezone,
+                     SourceType=SimpleNamespace(GPS='gps'), SensorDeviceClass=SimpleNamespace(DURATION='duration'))
+        for filename, classname in [('entity.py', 'StreamField'), ('sensor.py', 'StreamDuration'),
+                                     ('binary_sensor.py', 'StreamFlag'), ('device_tracker.py', 'StreamOrigin')]:
+            tree = ast.parse((ROOT/'integration/tesla_fleet_stream'/filename).read_text())
+            klass = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == classname)
+            exec(compile(ast.Module(body=[klass], type_ignores=[]), filename, 'exec'), scope)
+        m = StatusModel('test_car')
+        adapter = SimpleNamespace(models={'test_car': m}, bridge_available=True)
+        spec = {'slug': 'test_car', 'name': 'Test car'}
+        origin = scope['StreamOrigin'](adapter, spec)
+        flag = scope['StreamFlag'](adapter, spec, 'LocatedAtHome', 'tesla_home', 'Tesla home')
+        duration = scope['StreamDuration'](adapter, spec, 'EstimatedHoursToChargeTermination', 'hours_to_charge_limit', 'Hours', 'h')
+        self.assertFalse(origin.available)
+        self.assertIsNone(origin.latitude)
+        self.assertIsNone(flag.is_on)
+        self.assertIsNone(duration.native_value)
+        m.accept(snapshot(), 1700000000)
+        self.assertTrue(origin.available)
+        self.assertEqual((origin.latitude, origin.longitude), (10, 20))
+        self.assertFalse(flag.is_on)
+        observed = origin.extra_state_attributes['observed_at']
+        newer = snapshot(1700000060)
+        for name in ('OriginLocation', 'LocatedAtHome', 'EstimatedHoursToChargeTermination'):
+            newer['fields'][name]['value'] = {'invalid': True}
+        newer['invalid_fields'] = ['OriginLocation', 'LocatedAtHome', 'EstimatedHoursToChargeTermination']
+        m.accept(newer, 1700000060)
+        self.assertFalse(origin.available)
+        self.assertIsNone(origin.latitude)
+        self.assertIsNone(origin.longitude)
+        self.assertIsNone(flag.is_on)
+        self.assertIsNone(duration.native_value)
+        self.assertNotEqual(origin.extra_state_attributes['observed_at'], observed)
+        self.assertTrue(origin.extra_state_attributes['reported_invalid'])
+
     def test_public_and_companion_catalogs_match(self):
         self.assertEqual((ROOT/'bridge/status_fields.py').read_bytes(),
                          (ROOT/'integration/tesla_fleet_stream/status_fields.py').read_bytes())

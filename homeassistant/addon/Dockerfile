@@ -13,7 +13,7 @@ COPY --from=receiver /out/fleet-telemetry /usr/local/bin/fleet-telemetry
 COPY bridge/ /opt/bridge/
 COPY runtime.py archive_web.py /opt/
 COPY SOURCE_REVISION /opt/SOURCE_REVISION
-ARG BUILD_VERSION=0.5.0
+ARG BUILD_VERSION=0.6.0
 ARG BUILD_ARCH=amd64
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="addon" io.hass.arch="${BUILD_ARCH}"
 ENV PYTHONUNBUFFERED=1 SUPPRESS_TLS_HANDSHAKE_ERROR_LOGGING=true

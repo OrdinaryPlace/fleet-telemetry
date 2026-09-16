@@ -12,7 +12,7 @@ import subprocess
 APP_FILES = {
     "receiver": ("Dockerfile", "config.yaml", "runtime.py", "archive_web.py"),
     "commissioner": ("Dockerfile", "config.yaml", "commissioner.py", "entrypoint.py", "ha_support.py"),
-    "integration": ("__init__.py", "model.py", "sensor.py", "status_fields.py", "manifest.json"),
+    "integration": ("__init__.py", "model.py", "entity.py", "sensor.py", "binary_sensor.py", "device_tracker.py", "status_fields.py", "manifest.json"),
 }
 PREFIXES = {"receiver": "homeassistant/addon", "commissioner": "homeassistant/commissioner",
             "integration": "homeassistant/integration/tesla_fleet_stream"}

@@ -25,7 +25,7 @@ from typing import Any, Callable
 from status_fields import SPECS, NULLABLE_FIELDS, decode_status
 
 LOGGER = logging.getLogger("fleet_bridge")
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 MAX_PAYLOAD_BYTES = 256 * 1024
 SUPPORTED_FIELDS = {"Location": "location", "VehicleSpeed": "speed", "BatteryLevel": "battery", "Soc": "usable_battery", "Gear": "gear", "DriverSeatOccupied": "driver_present", "DriverSeatBelt": "driver_seat_belt", "PassengerSeatBelt": "rear_center_seat_belt"}
 NUMBER_KEYS = {"double_value", "float_value", "int_value", "long_value", "string_value"}

@@ -157,6 +157,7 @@ async def async_setup(hass, config):
         return False
     adapter = StreamAdapter(hass, vehicles, options["topic_prefix"])
     hass.data[DOMAIN] = adapter
-    await discovery.async_load_platform(hass, Platform.SENSOR, DOMAIN, {}, config)
+    for platform in (Platform.SENSOR, Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER):
+        await discovery.async_load_platform(hass, platform, DOMAIN, {}, config)
     await adapter.start()
     return True
