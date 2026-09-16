@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from build_context import APP_FILES, BRIDGE_FILES, BuildContextError, build_context, git as read_git
+from build_context import APP_FILES, BRIDGE_FILES, PREFIXES, BuildContextError, build_context, git as read_git
 
 
 class BuildContextTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class BuildContextTests(unittest.TestCase):
         self.root.mkdir()
         self.run_git("init", "-q")
         for kind, names in APP_FILES.items():
-            prefix = "homeassistant/addon" if kind == "receiver" else "homeassistant/commissioner"
+            prefix = PREFIXES[kind]
             for name in names:
                 self.write(f"{prefix}/{name}", "synthetic committed runtime\n")
         for name in BRIDGE_FILES:
@@ -53,7 +53,7 @@ class BuildContextTests(unittest.TestCase):
             self.write(relative, "SYNTHETIC_PRIVATE_SENTINEL")
         # Ignored artifacts do not make the repository's ordinary status dirty.
         self.assertTrue(self.run_git("check-ignore", "homeassistant/bridge/.env").strip())
-        for kind in ("receiver", "commissioner"):
+        for kind in APP_FILES:
             target = self.directory / kind
             revision = build_context(self.root, target, kind)
             self.assertEqual((target / "SOURCE_REVISION").read_text().strip(), revision)
@@ -62,7 +62,7 @@ class BuildContextTests(unittest.TestCase):
             self.assertNotIn("SYNTHETIC_PRIVATE_SENTINEL", contents)
             self.assertFalse((target / "receiver/test").exists())
             self.assertFalse((target / ".git").exists())
-            expected = len(APP_FILES[kind]) + 1 + (len(BRIDGE_FILES) + 3 if kind == "receiver" else 0)
+            expected = len(APP_FILES[kind]) + 1 + (len(BRIDGE_FILES) + 3 if kind == "receiver" else (1 if kind == "commissioner" else 0))
             self.assertEqual(sum(p.is_file() for p in target.rglob("*")), expected)
 
     def test_worktree_symlink_cannot_read_outside_source(self):

@@ -12,8 +12,11 @@ import subprocess
 APP_FILES = {
     "receiver": ("Dockerfile", "config.yaml", "runtime.py", "archive_web.py"),
     "commissioner": ("Dockerfile", "config.yaml", "commissioner.py", "entrypoint.py", "ha_support.py"),
+    "integration": ("__init__.py", "model.py", "sensor.py", "status_fields.py", "manifest.json"),
 }
-BRIDGE_FILES = ("bridge.py", "requirements.txt")
+PREFIXES = {"receiver": "homeassistant/addon", "commissioner": "homeassistant/commissioner",
+            "integration": "homeassistant/integration/tesla_fleet_stream"}
+BRIDGE_FILES = ("bridge.py", "status_fields.py", "requirements.txt")
 
 
 class BuildContextError(ValueError):
@@ -66,8 +69,10 @@ def build_context(root: Path, destination: Path, kind: str = "receiver") -> str:
         metadata, name = item.split(b"\t", 1)
         mode, object_type, object_id = metadata.decode().split()
         tree[name.decode()] = (mode, object_type, object_id)
-    app_prefix = "homeassistant/addon" if kind == "receiver" else "homeassistant/commissioner"
+    app_prefix = PREFIXES[kind]
     selected = {f"{app_prefix}/{name}": Path(name) for name in APP_FILES[kind]}
+    if kind == "commissioner":
+        selected["homeassistant/bridge/status_fields.py"] = Path("status_fields.py")
     if kind == "receiver":
         selected.update({f"homeassistant/bridge/{name}": Path("bridge") / name for name in BRIDGE_FILES})
         for relative in tree:

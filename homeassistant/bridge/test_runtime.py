@@ -188,7 +188,7 @@ class RuntimeTests(unittest.TestCase):
                 self.wait_for(lambda: len(locations(2)) == 2)
                 discovery_before = sum(item[1].endswith("/config") for item in peer.publications)
                 peer.publish("homeassistant/status", b"online")
-                self.wait_for(lambda: sum(item[1].endswith("/config") for item in peer.publications) == discovery_before + 12)
+                self.wait_for(lambda: sum(item[1].endswith("/config") for item in peer.publications) == discovery_before + 15)
                 self.wait_for(lambda: len(locations(2)) == 3)
                 peer.publish(f"test_receiver/{TEST_VIN}/records", sample(second_time))
                 time.sleep(0.1)

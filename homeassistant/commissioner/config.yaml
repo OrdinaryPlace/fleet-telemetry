@@ -1,5 +1,5 @@
 name: Tesla Fleet Stream Setup
-version: 0.2.0
+version: 0.3.0
 slug: tesla_fleet_stream_setup
 description: One-time signed telemetry configuration using the existing Home Assistant Tesla credentials
 url: https://github.com/OrdinaryPlace/fleet-telemetry
@@ -25,6 +25,7 @@ options:
   replace_existing: false
   driver_presence: false
   seat_belts: false
+  all_status: false
 schema:
   mode: list(inspect|configure|get_errors|mqtt_setup|ha_status)
   vehicle_names:
@@ -35,3 +36,4 @@ schema:
   replace_existing: bool
   driver_presence: bool
   seat_belts: bool
+  all_status: bool

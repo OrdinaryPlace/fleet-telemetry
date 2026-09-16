@@ -285,6 +285,23 @@ class CommissionerTests(unittest.TestCase):
             with self.assertRaises(c.Stop):
                 c.Options.parse(values | {'seat_belts': value})
 
+    def test_all_status_is_opt_in_and_preserves_every_existing_field(self):
+        previous = c.desired_config(replace(self.options, driver_presence=True, seat_belts=True), self.ca)
+        desired = c.desired_config(replace(self.options, driver_presence=True, seat_belts=True, all_status=True), self.ca)
+        self.assertGreater(len(desired['fields']), 80)
+        for field, value in previous['fields'].items():
+            self.assertEqual(desired['fields'][field], value)
+        api = FakeAPI()
+        current = api.current[VIN_A] | {'config': previous}
+        summary = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, desired)
+        self.assertTrue(summary['configuration_can_add_requested_fields'])
+        changed = current | {'config': previous | {'port': 443}}
+        self.assertFalse(c.status_summary(ALIASES[0], VIN_A, api.fleet, changed, desired)['configuration_can_add_requested_fields'])
+        self.assertFalse(self.options.all_status)
+        for value in (1, 'true', None):
+            with self.assertRaises(c.Stop):
+                c.Options.parse({'vehicle_names': list(ALIASES), 'hostname': 'telemetry.example.invalid', 'all_status': value})
+
     def test_seat_belts_are_opt_in_and_can_extend_presence_without_replacing_it(self):
         options = replace(self.options, driver_presence=True, seat_belts=True)
         desired = c.desired_config(options, self.ca)

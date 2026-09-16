@@ -117,6 +117,74 @@ necessary. Preserve native Fleet credentials, virtual key, controls, existing HA
 routes and other MQTT consumers. Make verified HA backups before and after
 deployment.
 
+## Stream all supported status (receiver 0.5.0, setup 0.3.0)
+
+The optional `all_status: true` setup option adds the reviewed field catalog in
+`bridge/status_fields.py`. It preserves the existing destination, CA, fields and
+intervals; unexpected configurations still require explicit replacement. The
+catalog includes charging, climate, access, navigation, media, tires and software
+versions. Media fields require vehicle firmware 2025.2.6 or later. Intervals are
+change-driven reporting limits, not polling or a guaranteed delivery cadence.
+
+Receiver 0.5.0 publishes a private, retained `fleet_status/state` snapshot for
+each alias. Values keep their original per-field source timestamps and survive
+receiver/broker restarts. An invalid physical measurement preserves the last
+valid value and marks its field invalid; navigation and cable/disconnected values
+explicitly clear. Activity topics retain their separate freshness/replay checks.
+The private state file now uses schema 3 and reads schemas 1 and 2 for upgrade.
+It contains sensitive last-reported status and positions: protect it like the
+location archive and never publish its contents or broker messages in diagnostics.
+
+The optional `tesla_fleet_stream` companion (0.1.0) updates the **existing native
+Fleet coordinators** from these snapshots, preserving entity IDs and native
+commands. This adapter is tested against Home Assistant Core 2026.9.2; its native
+runtime layout is not a stable extension API and must be reviewed on Core upgrades.
+It never calls Tesla, changes credentials, signs commands or overwrites REST states.
+
+Export the committed integration allowlist with:
+
+```sh
+python3 homeassistant/scripts/build_context.py /path/to/new-integration --kind integration
+```
+
+Install it under `/config/custom_components/tesla_fleet_stream`, then configure
+an exact native device name and the existing MQTT slug for every vehicle:
+
+```yaml
+tesla_fleet_stream:
+  vehicles:
+    - name: Example car
+      slug: example_car
+```
+
+Validate configuration and restart Core. Keep native automatic polling enabled
+until each `sensor.<slug>_status_source` reports `ready_to_disable_polling` and
+the streaming readings have been checked. The adapter waits for an actual
+locks/doors/windows/charge-port baseline and refuses entries with unmapped cars
+or energy sites. Then turn off **Enable polling for updates** in the native
+Tesla Fleet entry's system options. HA reloads the entry. Verify both the system
+option and each source sensor: `streaming`, `automatic_polling_disabled: true`,
+and a healthy bridge. The companion only applies data while that option is off;
+the 15-second binding timer inspects local HA objects and performs no vehicle reads.
+
+This removes **scheduled** native status polling. Native entry setup/reload still
+performs initial discovery/status reads, and explicitly requested commands can
+perform wake/status checks. These are existing native integration behavior.
+
+Display status as **last reported**, with source time and connection/freshness.
+No stream connection means offline, not proof the car is asleep. Unsupported
+polled fields become unknown. Software-update status/scheduling has no reliable
+stream equivalent: replace the native update card with the streamed installed
+and offered version sensors, and do not claim an update is installed or absent
+from an inferred state. Driver occupancy is not passenger identity; Tesla's
+PassengerSeatBelt field refers to the second-row center belt.
+
+Rollback: re-enable native automatic polling first and verify its readings,
+then remove the companion configuration and restart after a Core check. Restore
+the matching receiver/source backup if necessary. Receiver 0.4.0 cannot read
+schema 3; restore its matching pre-upgrade state file rather than deleting state
+or location history. Preserve all TLS/signing keys and stream configuration.
+
 ## Optional permanent location archive (receiver 0.2.0)
 
 Set `location_history: true` to retain every received Location datum for the configured vehicles. The default is false. The receiver saves UTC source and receipt times, the configured vehicle alias, resend status, and the complete typed Location value before publishing to MQTT or acknowledging the vehicle. Invalid measurements and delayed/resend records are kept; retransmissions can appear more than once. No VIN or other telemetry fields are written to the archive. GPS freshness/replay protection remains independent of the last-known display introduced in receiver 0.3.0.

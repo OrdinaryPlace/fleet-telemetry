@@ -22,9 +22,10 @@ import signal
 import tempfile
 import time
 from typing import Any, Callable
+from status_fields import SPECS, NULLABLE_FIELDS, decode_status
 
 LOGGER = logging.getLogger("fleet_bridge")
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 MAX_PAYLOAD_BYTES = 256 * 1024
 SUPPORTED_FIELDS = {"Location": "location", "VehicleSpeed": "speed", "BatteryLevel": "battery", "Soc": "usable_battery", "Gear": "gear", "DriverSeatOccupied": "driver_present", "DriverSeatBelt": "driver_seat_belt", "PassengerSeatBelt": "rear_center_seat_belt"}
 NUMBER_KEYS = {"double_value", "float_value", "int_value", "long_value", "string_value"}
@@ -172,6 +173,9 @@ class Vehicle:
     connection_time: int = 0
     connected: bool | None = None
     last_location: Measurement | None = None
+    status_fields: dict[str, dict] = field(default_factory=dict)
+    status_fences: dict[str, int] = field(default_factory=dict)
+    status_invalid: set[str] = field(default_factory=set)
 
 
 class Bridge:
@@ -196,7 +200,7 @@ class Bridge:
         if not state_path or not Path(state_path).exists():
             return
         state = json.loads(Path(state_path).read_text())
-        if not isinstance(state, dict) or state.get("version") not in (1, 2) or not isinstance(state.get("vehicles"), dict):
+        if not isinstance(state, dict) or state.get("version") not in (1, 2, 3) or not isinstance(state.get("vehicles"), dict):
             raise ValueError("invalid timestamp state")
         for vehicle in self.vehicles.values():
             saved = state["vehicles"].get(vehicle.slug, {})
@@ -210,6 +214,19 @@ class Bridge:
                 vehicle.last_update = timestamp(saved["last_update"])
             if saved.get("connection_time") is not None:
                 vehicle.connection_time = timestamp(saved["connection_time"])
+            for name, stamp in saved.get("status_fences", {}).items():
+                if name in SPECS:
+                    vehicle.status_fences[name] = timestamp(stamp)
+            for name, item in saved.get("status_fields", {}).items():
+                if name not in SPECS:
+                    continue
+                observed = timestamp(item["observed_at"])
+                decode_status(name, item["value"])
+                if observed / NANOSECOND > self.wall_clock() + self.config["future_tolerance_seconds"]:
+                    raise ValueError("invalid saved status time")
+                vehicle.status_fields[name] = item
+                vehicle.status_fences[name] = max(observed, vehicle.status_fences.get(name, 0))
+            vehicle.status_invalid = set(saved.get("status_invalid", [])) & SPECS.keys()
             if saved.get("last_location") is not None:
                 location = saved["last_location"]
                 value = decode_value("Location", {"location_value": location["value"]})
@@ -273,11 +290,14 @@ class Bridge:
         state_path = self.config.get("state_file")
         if not state_path:
             return
-        state = {"version": 2, "vehicles": {vehicle.slug: {
+        state = {"version": 3, "vehicles": {vehicle.slug: {
             "fields": {suffix: iso_time(measurement.observed) for suffix, measurement in vehicle.measurements.items()},
             "last_update": iso_time(vehicle.last_update) if vehicle.last_update is not None else None,
             "connection_time": iso_time(vehicle.connection_time) if vehicle.connection_time else None,
             "last_location": {"value": vehicle.last_location.value, "observed_at": iso_time(vehicle.last_location.observed)} if vehicle.last_location else None,
+            "status_fields": vehicle.status_fields,
+            "status_fences": {k: iso_time(v) for k, v in vehicle.status_fences.items()},
+            "status_invalid": sorted(vehicle.status_invalid),
         } for vehicle in self.vehicles.values()}}
         destination = Path(state_path)
         temporary = None
@@ -344,10 +364,13 @@ class Bridge:
                 ("binary_sensor", "telemetry_fresh", {"state_topic": f"{base}/telemetry_fresh/state", "device_class": "connectivity", "entity_category": "diagnostic"}),
                 ("binary_sensor", "location_fresh", {"state_topic": f"{base}/location_fresh/state", "icon": "mdi:map-clock", "entity_category": "diagnostic"}),
                 ("binary_sensor", "connected", {"state_topic": f"{base}/connected/state", "device_class": "connectivity", "entity_category": "diagnostic"}),
+                ("sensor", "streamed_fields", {"state_topic": f"{base}/status_summary/state", "value_template": "{{ value_json.field_count }}", "json_attributes_topic": f"{base}/status_summary/state", "entity_category": "diagnostic"}),
+                ("sensor", "software_version", {"state_topic": f"{base}/fleet_status/state", "value_template": "{{ value_json.get('fields', {}).get('Version', {}).get('value', {}).get('string_value', '') }}", "entity_category": "diagnostic"}),
+                ("sensor", "software_update_version", {"state_topic": f"{base}/fleet_status/state", "value_template": "{{ value_json.get('fields', {}).get('SoftwareUpdateVersion', {}).get('value', {}).get('string_value', '') }}", "entity_category": "diagnostic"}),
             ]
             for component, suffix, specific in specs:
                 availability = [{"topic": self.status_topic}]
-                if suffix == "location":
+                if suffix in ("location", "streamed_fields", "software_version", "software_update_version"):
                     availability = []  # Last-known coordinates survive a bridge outage.
                 if suffix in SUPPORTED_FIELDS.values() or suffix == "connected":
                     availability.append({"topic": f"{base}/{suffix}/availability"})
@@ -363,6 +386,9 @@ class Bridge:
                 }
                 if suffix in ("speed", "battery", "usable_battery", "gear", "driver_present", "driver_seat_belt", "rear_center_seat_belt"):
                     discovery["json_attributes_topic"] = f"{base}/{suffix}/attributes"
+                if not availability:
+                    discovery.pop("availability")
+                    discovery.pop("availability_mode")
                 self.send(f"{self.discovery_prefix}/{component}/tesla_live_{vehicle.slug}/{suffix}/config", discovery, retain=True, qos=1)
 
     def resync(self):
@@ -381,6 +407,7 @@ class Bridge:
         self.discoveries()
         for vehicle in self.vehicles.values():
             self.publish_location(vehicle)
+            self.publish_status(vehicle)
             if vehicle.last_update is not None:
                 self.send(f"{self.base(vehicle)}/last_update/state", iso_time(vehicle.last_update), retain=True)
         self.available(self.status_topic, True, force=True)
@@ -396,6 +423,21 @@ class Bridge:
         measurement = vehicle.measurements.get("location")
         fresh = measurement is not None and measurement.value is not None and self.fresh(measurement.observed, measurement.received)
         self.send(f"{self.base(vehicle)}/location_fresh/state", "ON" if fresh else "OFF", retain=True, qos=1)
+
+    def publish_status(self, vehicle: Vehicle):
+        """Durable last-reported status, separate from non-retained activity edges."""
+        if not vehicle.status_fields:
+            return
+        sample_time = max((item["observed_at"] for item in vehicle.status_fields.values()), key=timestamp)
+        snapshot = {"schema": 1, "vehicle": vehicle.slug, "fields": vehicle.status_fields,
+                    "observed_at": iso_time(max([*vehicle.status_fences.values(), vehicle.connection_time])),
+                    "invalid_fields": sorted(vehicle.status_invalid),
+                    "connection": vehicle.connected,
+                    "connection_observed_at": iso_time(vehicle.connection_time) if vehicle.connection_time else None}
+        self.send(f"{self.base(vehicle)}/fleet_status/state", snapshot, retain=True, qos=1)
+        self.send(f"{self.base(vehicle)}/status_summary/state",
+                  {"field_count": len(vehicle.status_fields), "observed_at": sample_time,
+                   "invalid_fields": sorted(vehicle.status_invalid), "source": "Tesla Fleet Telemetry"}, retain=True, qos=1)
 
     def receive(self, topic: str, payload: bytes, retained=False):
         # Reject retained data even if a previous receiver used different settings.
@@ -447,15 +489,27 @@ class Bridge:
             raise ValueError("invalid data")
         seen = set()
         decoded = []
+        status_decoded = []
         for datum in data:
             if not isinstance(datum, dict) or not isinstance(datum.get("key"), str):
                 raise ValueError("invalid datum")
             key = datum["key"]
-            if key not in SUPPORTED_FIELDS:
+            if key not in SUPPORTED_FIELDS and key not in SPECS:
                 continue
             if key in seen:
                 raise ValueError("duplicate field")
             seen.add(key)
+            if key in SPECS:
+                raw = datum.get("value")
+                try:
+                    patch = decode_status(key, raw)
+                except (ValueError, TypeError, OverflowError):
+                    raw = {"invalid": True}
+                    patch = decode_status(key, raw)
+                    self.counters["invalid_status_field"] += 1
+                status_decoded.append((key, raw, any(v is not None for v in patch.values())))
+            if key not in SUPPORTED_FIELDS:
+                continue
             # A bad value invalidates this field at its authentic new timestamp.
             try:
                 value = decode_value(key, datum.get("value"))
@@ -464,6 +518,21 @@ class Bridge:
                 self.counters["invalid_field"] += 1
             decoded.append((SUPPORTED_FIELDS[key], value))
         changes = []
+        status_changed = False
+        for name, raw, valid in status_decoded:
+            if observed <= vehicle.status_fences.get(name, 0):
+                self.counters["out_of_order_status_rejected"] += 1
+                continue
+            vehicle.status_fences[name] = observed
+            status_changed = True
+            if valid:
+                vehicle.status_invalid.discard(name)
+            else:
+                vehicle.status_invalid.add(name)
+            # Keep last reported non-nullable status with its *old* source time;
+            # missing navigation/cable/update data explicitly clears that field.
+            if valid or name in NULLABLE_FIELDS:
+                vehicle.status_fields[name] = {"value": raw, "observed_at": iso_time(observed)}
         for suffix, value in decoded:
             previous = vehicle.measurements.get(suffix)
             if previous and observed <= previous.observed:
@@ -474,7 +543,7 @@ class Bridge:
             if suffix == "location" and value is not None:
                 vehicle.last_location = Measurement(observed, 0, dict(value))
             changes.append((suffix, value))
-        if changes:
+        if changes or status_changed:
             if vehicle.last_update is None or observed >= vehicle.last_update:
                 vehicle.last_update, vehicle.last_received = observed, self.monotonic()
             # Commit source-time fences before publishing any state externally.
@@ -489,10 +558,11 @@ class Bridge:
                 self.send(f"{base}/state", str(value))
                 self.send(f"{base}/attributes", {"observed_at": iso_time(observed)})
             self.available(f"{base}/availability", value is not None)
-        if changes:
+        if changes or status_changed:
             self.counters["accepted_records"] += 1
             self.send(f"{self.base(vehicle)}/last_update/state", iso_time(vehicle.last_update), retain=True)
             self.send(f"{self.base(vehicle)}/telemetry_fresh/state", "ON", retain=True)
+            self.publish_status(vehicle)
 
     def connectivity(self, vehicle: Vehicle, record: dict):
         observed = timestamp(record.get("CreatedAt"))
@@ -520,6 +590,7 @@ class Bridge:
         self.persist_fences()
         self.send(f"{self.base(vehicle)}/connected/state", "ON" if vehicle.connected else "OFF")
         self.available(f"{self.base(vehicle)}/connected/availability", True)
+        self.publish_status(vehicle)
         if not vehicle.connected:
             self.tick()
 
