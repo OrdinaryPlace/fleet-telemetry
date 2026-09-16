@@ -161,7 +161,7 @@ Validate configuration and restart Core. Keep native automatic polling enabled
 until each `sensor.<slug>_status_source` reports `ready_to_disable_polling` and
 the streaming readings have been checked. The adapter waits for an actual
 locks/doors/windows/charge-port baseline and refuses entries with unmapped cars
-or energy sites. Then turn off **Enable polling for updates** in the native
+or energy sites. Then turn off **Enable polling for changes** in the native
 Tesla Fleet entry's system options. HA reloads the entry. Verify both the system
 option and each source sensor: `streaming`, `automatic_polling_disabled: true`,
 and a healthy bridge. The companion only applies data while that option is off;
