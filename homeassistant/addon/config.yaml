@@ -1,5 +1,5 @@
 name: Tesla Fleet Stream
-version: 0.3.0
+version: 0.4.0
 slug: tesla_fleet_stream
 description: Tesla's authenticated telemetry receiver with timestamp-aware Home Assistant MQTT entities
 url: https://github.com/OrdinaryPlace/fleet-telemetry

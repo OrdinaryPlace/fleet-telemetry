@@ -108,7 +108,10 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("state_topic", tracker)
         self.assertEqual(tracker["default_entity_id"], "device_tracker.test_car_live_location")
         self.assertEqual(tracker["availability_mode"], "all")
-        self.assertEqual(len(discovery), 9)
+        self.assertEqual(len(discovery), 12)
+        presence = next(item for item in discovery if item["unique_id"].endswith("_driver_present"))
+        self.assertEqual(presence['device_class'], 'occupancy')
+        self.assertEqual(presence['default_entity_id'], 'binary_sensor.test_car_live_driver_present')
         self.assertEqual(tracker["availability"], [{"topic": "test_live/test_car/location/availability"}])
         self.assertNotIn(TEST_VIN, json.dumps(discovery))
         self.assertEqual({tuple(item["device"]["identifiers"]) for item in discovery}, {("tesla_live_test_car",)})
@@ -165,6 +168,70 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.last("test_live/test_car/battery/state"), "0.0")
         self.assertEqual(self.last("test_live/test_car/usable_battery/state"), "0.0")
         self.assertEqual(self.last("test_live/test_car/gear/state"), "P")
+
+    def test_driver_presence_boolean_edges_expiry_and_resync(self):
+        topic = 'test_live/test_car/driver_present/state'
+        for value, expected in ((False, 'OFF'), (True, 'ON'), (False, 'OFF')):
+            self.clock.advance(5)
+            self.record({'DriverSeatOccupied': {'boolean_value': value}})
+            self.assertEqual(self.last(topic), expected)
+        updates = lambda: [m for m in self.messages if m[0] == topic]
+        self.assertEqual(len(updates()), 3)
+        self.assertTrue(all(not m[2]['retain'] for m in updates()))
+        self.assertIn('observed_at', json.loads(self.last('test_live/test_car/driver_present/attributes')))
+        self.clock.advance(91)
+        self.bridge.tick()
+        self.assertEqual(self.last('test_live/test_car/driver_present/availability'), 'offline')
+        self.bridge.resync()
+        self.assertEqual(len(updates()), 3)  # Neither silence nor restoration is an exit.
+
+    def test_driver_presence_invalid_stale_replayed_and_unordered(self):
+        topic = 'test_live/test_car/driver_present/state'
+        self.record({'DriverSeatOccupied': {'boolean_value': True}})
+        for kwargs in ({'age': 31}, {'age': -6}, {'is_resend': True}, {'age': 1}, {}):
+            self.record({'DriverSeatOccupied': {'boolean_value': False}}, **kwargs)
+        raw = self.envelope({'DriverSeatOccupied': {'boolean_value': False}})
+        self.bridge.receive(f'test_receiver/{TEST_VIN}/records', raw, retained=True)
+        for value in ({'boolean_value': 'false'}, {'boolean_value': 0}, {'string_value': 'false'}, {'invalid': True}):
+            self.clock.advance(1)
+            self.record({'DriverSeatOccupied': value})
+        self.assertEqual([m[1] for m in self.messages if m[0] == topic], ['ON'])
+        self.assertEqual(self.last('test_live/test_car/driver_present/availability'), 'offline')
+
+    def test_driver_presence_restart_retains_replay_fence_without_replaying_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = deepcopy(CONFIG) | {'state_file': str(Path(directory) / 'state.json')}
+            self.bridge = self.make_bridge(config)
+            self.record({'DriverSeatOccupied': {'boolean_value': True}})
+            self.messages.clear()
+            self.bridge = self.make_bridge(config)
+            self.bridge.resync()
+            self.record({'DriverSeatOccupied': {'boolean_value': False}})
+            self.assertIsNone(self.last('test_live/test_car/driver_present/state'))
+            self.clock.advance(1)
+            self.record({'DriverSeatOccupied': {'boolean_value': False}})
+            self.assertEqual(self.last('test_live/test_car/driver_present/state'), 'OFF')
+
+    def test_seat_belts_preserve_documented_polarity_and_enum_faults(self):
+        for raw, expected in ((True, 'unbuckled'), (False, 'buckled')):
+            self.clock.advance(1)
+            self.record({'DriverSeatBelt': {'boolean_value': raw}})
+            self.assertEqual(self.last('test_live/test_car/driver_seat_belt/state'), expected)
+        for raw, expected in (('BuckleStatusUnlatched', 'unbuckled'), ('BuckleStatusLatched', 'buckled'), ('BuckleStatusFaulted', 'fault')):
+            self.clock.advance(1)
+            self.record({'PassengerSeatBelt': {'buckle_status_value': raw}})
+            self.assertEqual(self.last('test_live/test_car/rear_center_seat_belt/state'), expected)
+        before = [m for m in self.messages if m[0].endswith('seat_belt/state')]
+        for key in ('DriverSeatBelt', 'PassengerSeatBelt'):
+            for value in ({'invalid': True}, {'boolean_value': 'false'}, {'buckle_status_value': 'BuckleStatusUnknown'}):
+                self.clock.advance(1)
+                self.record({key: value})
+        self.clock.advance(91)
+        self.bridge.tick()
+        self.bridge.resync()
+        after = [m for m in self.messages if m[0].endswith('seat_belt/state')]
+        self.assertEqual(before, after)
+        self.assertTrue(all(not m[2]['retain'] for m in after))
 
     def test_distinct_battery_values_and_clock_correction_do_not_relabel_or_revive(self):
         self.record({"BatteryLevel": {"double_value": 55}, "Soc": {"double_value": 54}})

@@ -1,6 +1,7 @@
 """Synthetic-only checks for commissioning safety and response handling."""
 
 from contextlib import contextmanager
+from dataclasses import replace
 import base64
 import copy
 import io
@@ -253,6 +254,76 @@ class CommissionerTests(unittest.TestCase):
         self.assertTrue(result["already_configured"])
         self.assertFalse(result["changed"])
         self.assertFalse((self.data / "commissioner").exists())
+
+    def test_driver_presence_is_opt_in_and_only_exact_addition_is_allowed(self):
+        options = replace(self.options, driver_presence=True)
+        desired = c.desired_config(options, self.ca)
+        self.assertNotIn('DriverSeatOccupied', self.desired['fields'])
+        self.assertEqual(desired['fields']['DriverSeatOccupied'], {'interval_seconds': 5})
+        api = FakeAPI()
+        current = api.current[VIN_A] | {'config': self.desired}
+        summary = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, desired)
+        self.assertTrue(summary['configuration_can_add_requested_fields'])
+        self.assertEqual(c.plan_changes({ALIASES[0]: VIN_A}, [summary], False), [VIN_A])
+        for patch_config in ({'hostname': 'other.example.invalid'}, {'port': 443}, {'extra': True},
+                             {'fields': self.desired['fields'] | {'Gear': {'interval_seconds': 5}}},
+                             {'fields': desired['fields'] | {'DriverSeatOccupied': {'interval_seconds': 10}}}):
+            with self.subTest(change=patch_config):
+                changed = current | {'config': self.desired | patch_config}
+                summary = c.status_summary(ALIASES[0], VIN_A, api.fleet, changed, desired)
+                self.assertFalse(summary['configuration_can_add_requested_fields'])
+                with self.assertRaisesRegex(c.Stop, 'existing_configuration_differs'):
+                    c.plan_changes({ALIASES[0]: VIN_A}, [summary], False)
+
+    def test_driver_presence_flag_requires_boolean(self):
+        values = {'vehicle_names': list(ALIASES), 'hostname': 'telemetry.example.invalid'}
+        self.assertFalse(c.Options.parse(values).driver_presence)
+        self.assertTrue(c.Options.parse(values | {'driver_presence': True}).driver_presence)
+        for value in (1, 'true', None):
+            with self.assertRaises(c.Stop):
+                c.Options.parse(values | {'driver_presence': value})
+            with self.assertRaises(c.Stop):
+                c.Options.parse(values | {'seat_belts': value})
+
+    def test_seat_belts_are_opt_in_and_can_extend_presence_without_replacing_it(self):
+        options = replace(self.options, driver_presence=True, seat_belts=True)
+        desired = c.desired_config(options, self.ca)
+        self.assertEqual(set(desired['fields']) - set(self.desired['fields']),
+                         {'DriverSeatOccupied', 'DriverSeatBelt', 'PassengerSeatBelt'})
+        api = FakeAPI()
+        previous = c.desired_config(replace(self.options, driver_presence=True), self.ca)
+        current = api.current[VIN_A] | {'config': previous}
+        summary = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, desired)
+        self.assertTrue(summary['configuration_can_add_requested_fields'])
+        current['config']['fields']['DriverSeatOccupied']['interval_seconds'] = 10
+        summary = c.status_summary(ALIASES[0], VIN_A, api.fleet, current, desired)
+        self.assertFalse(summary['configuration_can_add_requested_fields'])
+
+    def test_driver_presence_extension_backs_up_once_and_is_idempotent(self):
+        api = FakeAPI()
+        for vin in (VIN_A, VIN_B):
+            api.current[vin]['config'] = copy.deepcopy(self.desired)
+        options = replace(self.options, driver_presence=True)
+        writes = []
+        outer = self
+        @contextmanager
+        def factory(*_):
+            backups = list((outer.data / 'commissioner/backups').glob('*.json'))
+            outer.assertEqual(len(backups), 1)
+            saved = json.loads(backups[0].read_text())
+            outer.assertTrue(all(v['previous']['config'] == outer.desired for v in saved['vehicles']))
+            class Proxy:
+                def request(self, method, path, body):
+                    writes.append(body)
+                    for vin in body['vins']:
+                        api.current[vin].update(config=copy.deepcopy(body['config']), synced=True)
+                    return {'response': {'updated_vehicles': 2, 'skipped_vehicles': {}}}
+            yield Proxy()
+        result = self.execute(api, options, factory)
+        self.assertTrue(result['request_accepted_for_all'])
+        self.assertTrue(result['all_readbacks_match'])
+        self.assertEqual(len(writes), 1)
+        self.assertTrue(self.execute(api, options)['already_configured'])
 
     def test_backup_precedes_one_signed_request_and_readback_distinguishes_synced(self):
         api = FakeAPI()

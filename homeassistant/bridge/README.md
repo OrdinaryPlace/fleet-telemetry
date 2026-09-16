@@ -77,6 +77,9 @@ For slug `example_car`, initial discovery requests these IDs:
 | `sensor.example_car_live_battery` | BatteryLevel percentage; disabled initially |
 | `sensor.example_car_live_usable_battery` | Soc usable charge percentage; disabled initially |
 | `sensor.example_car_live_gear` | P, R, N, or D; disabled initially |
+| `binary_sensor.example_car_live_driver_present` | DriverSeatOccupied; ON/OFF driver presence, enabled initially |
+| `sensor.example_car_live_driver_seat_belt` | Driver belt: buckled/unbuckled; enabled initially |
+| `sensor.example_car_live_rear_center_seat_belt` | Tesla-reported rear center belt: buckled/unbuckled/fault; enabled initially |
 
 These IDs are defaults; Home Assistant may assign a suffix if an ID already
 exists, and user renames remain authoritative. Devices use stable slug-based
@@ -90,6 +93,25 @@ mismatches, retained input, resent records, delayed records, excessive future
 timestamps, and duplicate/out-of-order field observations. Exact nanosecond
 ordering survives bridge restarts. An expired fix cannot become fresh again
 from clock correction or another field's update.
+
+Receiver 0.4.0 accepts only a true protobuf boolean for `DriverSeatOccupied`.
+It publishes non-retained `ON`/`OFF` on `<state_prefix>/<slug>/driver_present/state`
+after the same source-time/replay validation as gear. Its attributes contain the
+original `observed_at`. Presence availability expires like other live scalars;
+silence, invalid samples, disconnects and restarts do not publish an OFF event.
+For entry/exit logging, consume this validated topic and keep a prior-value
+baseline: a quiet occupied seat can exceed the entity freshness window. Ignore
+the first observation and repeated values; never infer exit from unavailability.
+This reports driver presence, without person identity or per-passenger occupancy.
+Configure the setup app with `driver_presence: true` to request this field.
+
+With setup `seat_belts: true`, driver and Tesla-reported rear-center belt states
+use the same non-retained delivery, original timestamp, expiry and replay rules.
+Tesla defines `DriverSeatBelt=true` as unbuckled. `PassengerSeatBelt` is a typed
+`BuckleStatus` enum, and Tesla documents that it incorrectly refers to the
+second-row center belt. It is deliberately labeled that way, rather than as a
+front-passenger sensor. Unknown/invalid values become unavailable, not buckled;
+the explicit enum fault remains `fault`. Belt states do not establish occupancy.
 
 Location stays available after its freshness limit or a vehicle disconnect. Its
 `observed_at` attribute always identifies the original fix, not the restore or

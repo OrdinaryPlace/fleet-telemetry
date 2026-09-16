@@ -65,6 +65,8 @@ class Options:
     port: int = 8443
     ca_file: Path = Path("/ssl/tesla-fleet-stream/ca.pem")
     replace_existing: bool = False
+    driver_presence: bool = False
+    seat_belts: bool = False
 
     @classmethod
     def parse(cls, value: Any) -> "Options":
@@ -75,6 +77,8 @@ class Options:
         hostname = value.get("hostname", "")
         port = value.get("port", 8443)
         replace = value.get("replace_existing", False)
+        driver_presence = value.get("driver_presence", False)
+        seat_belts = value.get("seat_belts", False)
         ca = value.get("ca_file", "/ssl/tesla-fleet-stream/ca.pem")
         if mode not in {"inspect", "configure", "get_errors"}:
             raise Stop("invalid_mode")
@@ -85,13 +89,13 @@ class Options:
             raise Stop("invalid_vehicle_aliases")
         if not isinstance(hostname, str) or not HOST_RE.fullmatch(hostname):
             raise Stop("invalid_telemetry_hostname")
-        if type(port) is not int or not 1 <= port <= 65535 or type(replace) is not bool:
+        if type(port) is not int or not 1 <= port <= 65535 or any(type(v) is not bool for v in (replace, driver_presence, seat_belts)):
             raise Stop("invalid_options")
         # Limit mount reads to the app's public-certificate area.
         if (not isinstance(ca, str) or not Path(ca).is_absolute()
                 or ".." in Path(ca).parts or not ca.startswith("/ssl/")):
             raise Stop("invalid_ca_path")
-        return cls(mode, tuple(names), hostname, port, Path(ca), replace)
+        return cls(mode, tuple(names), hostname, port, Path(ca), replace, driver_presence, seat_belts)
 
 
 @dataclass(frozen=True)
@@ -199,8 +203,13 @@ def certificate_fingerprint(pem: str) -> str:
 
 def desired_config(options: Options, ca_pem: str) -> dict[str, Any]:
     certificate_fingerprint(ca_pem)
+    fields = dict(FIELDS)
+    if options.driver_presence:
+        fields["DriverSeatOccupied"] = {"interval_seconds": 5}
+    if options.seat_belts:
+        fields.update({"DriverSeatBelt": {"interval_seconds": 5}, "PassengerSeatBelt": {"interval_seconds": 5}})
     return {"hostname": options.hostname, "port": options.port,
-            "ca": ca_pem, "fields": FIELDS}
+            "ca": ca_pem, "fields": fields}
 
 
 def same_config(existing: Any, desired: dict[str, Any]) -> bool:
@@ -349,10 +358,21 @@ def status_summary(alias: str, vin: str, fleet: dict[str, Any], current: dict[st
     telemetry_version = info.get("fleet_telemetry_version")
     compatible = firmware_supported(info.get("firmware_version"))
     telemetry_present = isinstance(telemetry_version, str) and bool(re.fullmatch(r"\d+(?:\.\d+)+", telemetry_version))
+    # Opt-ins allow only missing presence/belt fields to be added. Every prior
+    # endpoint, CA, interval, field and unknown option must still match exactly.
+    existing = current["config"]
+    old_fields = existing.get('fields', {}) if isinstance(existing, dict) else {}
+    additions = set(desired['fields']) - set(old_fields) if isinstance(old_fields, dict) else set()
+    allowed = {'DriverSeatOccupied', 'DriverSeatBelt', 'PassengerSeatBelt'}
+    previous_desired = desired | {'fields': {k: v for k, v in desired['fields'].items() if k not in additions}}
+    can_extend = (bool(additions) and additions <= allowed
+                  and all(desired['fields'][k] == {'interval_seconds': 5} for k in additions)
+                  and same_config(existing, previous_desired))
     return {"vehicle": alias, "key_paired": ready, "pairing_evidence": evidence,
             "firmware_supported": compatible, "telemetry_capability_reported": telemetry_present,
             "configuration_present": current["config"] is not None,
             "configuration_matches": same_config(current["config"], desired),
+            "configuration_can_add_requested_fields": can_extend,
             "configuration_synced": current.get("synced") is True,
             "configuration_limit_reached": current.get("limit_reached") is True,
             "preflight_ready": ready and compatible and telemetry_present}
@@ -362,7 +382,8 @@ def plan_changes(selected: dict[str, str], summaries: list[dict[str, Any]],
                  replace_existing: bool) -> list[str]:
     if any(not s["preflight_ready"] for s in summaries):
         raise Stop("vehicle_pairing_or_firmware_not_ready")
-    if any(s["configuration_present"] and not s["configuration_matches"] for s in summaries) and not replace_existing:
+    if any(s["configuration_present"] and not s["configuration_matches"]
+           and not s.get("configuration_can_add_requested_fields", False) for s in summaries) and not replace_existing:
         raise Stop("existing_configuration_differs")
     if any(s["configuration_limit_reached"] and not s["configuration_present"] for s in summaries):
         raise Stop("vehicle_configuration_limit_reached")

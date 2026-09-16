@@ -24,9 +24,9 @@ import time
 from typing import Any, Callable
 
 LOGGER = logging.getLogger("fleet_bridge")
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 MAX_PAYLOAD_BYTES = 256 * 1024
-SUPPORTED_FIELDS = {"Location": "location", "VehicleSpeed": "speed", "BatteryLevel": "battery", "Soc": "usable_battery", "Gear": "gear"}
+SUPPORTED_FIELDS = {"Location": "location", "VehicleSpeed": "speed", "BatteryLevel": "battery", "Soc": "usable_battery", "Gear": "gear", "DriverSeatOccupied": "driver_present", "DriverSeatBelt": "driver_seat_belt", "PassengerSeatBelt": "rear_center_seat_belt"}
 NUMBER_KEYS = {"double_value", "float_value", "int_value", "long_value", "string_value"}
 SLUG = re.compile(r"^[a-z0-9][a-z0-9_]{0,47}$")
 VIN = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
@@ -67,6 +67,26 @@ def decode_value(key: str, value: Any) -> Any:
         raise ValueError("invalid oneof")
     if value.get("invalid") is True:
         return None
+    if key == "DriverSeatOccupied":
+        occupied = value.get("boolean_value")
+        if type(occupied) is not bool:
+            raise ValueError("invalid driver presence")
+        return "ON" if occupied else "OFF"
+    if key == "DriverSeatBelt":
+        # Tesla documents true as the driver having unbuckled, not latched.
+        unbuckled = value.get("boolean_value")
+        if type(unbuckled) is not bool:
+            raise ValueError("invalid driver belt")
+        return "unbuckled" if unbuckled else "buckled"
+    if key == "PassengerSeatBelt":
+        # Despite its name, Tesla documents this as the second-row center belt.
+        buckle = value.get("buckle_status_value")
+        if buckle == "BuckleStatusUnknown":
+            return None
+        values = {"BuckleStatusLatched": "buckled", "BuckleStatusUnlatched": "unbuckled", "BuckleStatusFaulted": "fault"}
+        if not isinstance(buckle, str) or buckle not in values:
+            raise ValueError("invalid rear center belt")
+        return values[buckle]
     if key == "Location":
         location = value.get("location_value")
         if not isinstance(location, dict):
@@ -317,6 +337,9 @@ class Bridge:
                 ("sensor", "battery", {"state_topic": f"{base}/battery/state", "device_class": "battery", "unit_of_measurement": "%", "state_class": "measurement", "enabled_by_default": False}),
                 ("sensor", "usable_battery", {"state_topic": f"{base}/usable_battery/state", "device_class": "battery", "unit_of_measurement": "%", "state_class": "measurement", "enabled_by_default": False}),
                 ("sensor", "gear", {"state_topic": f"{base}/gear/state", "icon": "mdi:car-shift-pattern", "enabled_by_default": False}),
+                ("binary_sensor", "driver_present", {"state_topic": f"{base}/driver_present/state", "device_class": "occupancy"}),
+                ("sensor", "driver_seat_belt", {"state_topic": f"{base}/driver_seat_belt/state", "device_class": "enum", "options": ["buckled", "unbuckled"], "icon": "mdi:seatbelt"}),
+                ("sensor", "rear_center_seat_belt", {"state_topic": f"{base}/rear_center_seat_belt/state", "name": "Rear center belt (Tesla-reported)", "device_class": "enum", "options": ["buckled", "unbuckled", "fault"], "icon": "mdi:seatbelt"}),
                 ("sensor", "last_update", {"state_topic": f"{base}/last_update/state", "device_class": "timestamp", "entity_category": "diagnostic"}),
                 ("binary_sensor", "telemetry_fresh", {"state_topic": f"{base}/telemetry_fresh/state", "device_class": "connectivity", "entity_category": "diagnostic"}),
                 ("binary_sensor", "location_fresh", {"state_topic": f"{base}/location_fresh/state", "icon": "mdi:map-clock", "entity_category": "diagnostic"}),
@@ -338,7 +361,7 @@ class Bridge:
                     "origin": {"name": "Fleet Telemetry bridge", "sw_version": VERSION},
                     **specific,
                 }
-                if suffix in ("speed", "battery", "usable_battery", "gear"):
+                if suffix in ("speed", "battery", "usable_battery", "gear", "driver_present", "driver_seat_belt", "rear_center_seat_belt"):
                     discovery["json_attributes_topic"] = f"{base}/{suffix}/attributes"
                 self.send(f"{self.discovery_prefix}/{component}/tesla_live_{vehicle.slug}/{suffix}/config", discovery, retain=True, qos=1)
 

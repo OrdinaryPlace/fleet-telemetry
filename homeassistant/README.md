@@ -76,6 +76,16 @@ vehicle synchronization and actual records reaching HA are separate checks.
 Verify a real vehicle sample updates HA before claiming successful streaming.
 Do not operate unrelated vehicle controls just to test the installation.
 
+Receiver 0.4.0 adds an enabled live driver-presence binary sensor. In setup 0.2.0,
+opt into `driver_presence: true` to add `DriverSeatOccupied` at a five-second
+minimum interval, preserving every other stream field and connection setting.
+The commissioner permits only this exact additive extension unless broader
+replacement is explicitly selected. Driver presence is distinct from Tesla's
+polled User present sensor and does not identify individual passengers.
+Setup `seat_belts: true` also adds driver and Tesla-reported rear-center belt
+states at five-second change intervals. The bridge uses Tesla's documented
+boolean polarity and BuckleStatus enum, and keeps missing/invalid data distinct.
+
 Different existing configuration is preserved unless replacement is explicitly
 selected. The setup app reads a valid native access token in place; an expired
 token must be refreshed by the native integration. It never refreshes tokens

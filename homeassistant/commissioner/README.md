@@ -50,6 +50,24 @@ intervals for changed values, not a promise of continuous transmission or a
 fixed bill. Verify the receiver, direct mTLS route, and desired data access
 before selecting `configure`.
 
+Setup 0.2.0 optionally accepts `driver_presence: true` (default false), adding
+`DriverSeatOccupied` at a five-second minimum change interval. Use receiver 0.4.0
+or later for its Home Assistant bridge. This is driver presence only, not
+individual passenger-seat occupancy. The opt-in permits adding exactly this
+field to an otherwise matching existing configuration without setting
+`replace_existing`. A different hostname, port, CA, existing interval, extra
+option, or different presence interval still stops configuration. Existing
+configuration is backed up before the signed request, and readback is verified.
+
+`seat_belts: true` (also default false) adds `DriverSeatBelt` and
+`PassengerSeatBelt` at five-second minimum change intervals. The same exact
+additive check permits missing opted-in presence/belt fields while preserving
+already configured fields and intervals. Tesla documents `PassengerSeatBelt` as
+incorrectly reporting the second-row center belt; no front-passenger or
+individual rear-seat occupancy is promised. Driver boolean true means unbuckled;
+the other belt uses the typed BuckleStatus enum. Await actual vehicle records to
+verify support, independently of configuration acceptance/synchronization.
+
 The configure preflight requires the vehicle-data, location, and vehicle-command
 OAuth scopes, matching application key pairing, a reported telemetry client,
 and firmware at least 2024.26. Tesla's response remains authoritative about
