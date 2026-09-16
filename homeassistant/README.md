@@ -135,7 +135,7 @@ The private state file now uses schema 3 and reads schemas 1 and 2 for upgrade.
 It contains sensitive last-reported status and positions: protect it like the
 location archive and never publish its contents or broker messages in diagnostics.
 
-The optional `tesla_fleet_stream` companion (0.2.0) updates the **existing native
+The optional `tesla_fleet_stream` companion (0.2.1) updates the **existing native
 Fleet coordinators** from these snapshots, preserving entity IDs and native
 commands. This adapter is tested against Home Assistant Core 2026.9.2; its native
 runtime layout is not a stable extension API and must be reviewed on Core upgrades.
@@ -209,3 +209,21 @@ The private directory `/share/tesla-fleet-location-history` contains daily per-v
 Open the app's **Open Web UI** to download daily CSV or original NDJSON through authenticated Home Assistant Ingress. Port 8099 has no host port mapping and rejects requests not originating from Supervisor Ingress. No new WAN port is needed. CSV preserves zero coordinates, leaves invalid coordinates empty, and skips interrupted rows; the original download preserves all bytes for recovery. Raw files append after a restart and separate incomplete tails without overwriting them.
 
 This archive starts when enabled; it cannot recreate GPS records that were never received. Home Assistant Recorder history can be imported separately as clearly identified snapshots, with its original state timestamp distinguished from a Tesla source timestamp.
+
+### Activity events (companion 0.2.1)
+
+The local `tesla_fleet_stream_activity` HA event contains only a configured vehicle
+alias, kind, original source time and the relevant door/tire position or offered
+version. Kinds are `charge_complete`, `door_opened`, `tire_pressure_warning`, and
+`software_update_available`. Consumers choose their own logging/notification
+policy. No notification destination or location data is included. Tire warnings
+are Tesla's soft warning, which does not distinguish under- from over-pressure;
+optional pressure is bar and has its own source timestamp.
+
+Events require a previous stream baseline, a newer field timestamp within 30
+seconds (at most 5 seconds future tolerance), a genuine valid transition and a
+non-retained delivery. Startup, replay, invalid physical data and repeats do not
+make events. Software offers may transition from explicit no-offer to a version;
+an offer matching the installed version is suppressed. These are best-effort
+activities, not a driving or safety audit. Existing fresh scalar gear events
+remain available separately with their original replay protection.

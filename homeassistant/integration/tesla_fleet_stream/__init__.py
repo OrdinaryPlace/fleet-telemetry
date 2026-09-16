@@ -65,8 +65,14 @@ class StreamAdapter:
                     return
                 try:
                     snapshot = json.loads(message.payload)
-                    if self.models[slug].accept(snapshot, time.time()):
+                    model = self.models[slug]
+                    previous, previous_invalid = dict(model.fields), set(model.invalid)
+                    received_at = time.time()
+                    if model.accept(snapshot, received_at):
                         self.apply(slug)
+                        if not message.retain:
+                            for event in model.activity_changes(previous, previous_invalid, received_at):
+                                self.hass.bus.async_fire(DOMAIN + "_activity", {"vehicle": slug, **event})
                 except (ValueError, TypeError, KeyError, OverflowError):
                     LOGGER.warning("Rejected malformed status snapshot for configured alias")
                 async_dispatcher_send(self.hass, SIGNAL)

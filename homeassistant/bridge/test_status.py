@@ -192,6 +192,73 @@ class StatusTests(unittest.TestCase):
                          (ROOT/'integration/tesla_fleet_stream/status_fields.py').read_bytes())
 
 
+class ActivityEventTests(unittest.TestCase):
+    def base(self):
+        model = StatusModel('test_car')
+        base = snapshot()
+        base['fields']['DetailedChargeState']['value'] = {'detailed_charge_state_value': 'DetailedChargeStateCharging'}
+        base['fields']['SoftwareUpdateVersion']['value'] = {'invalid': True}
+        base['invalid_fields'] = ['SoftwareUpdateVersion']
+        model.accept(base, 1700000000)
+        return model
+
+    def change(self, model, changes, at=1700000001, now=None, invalid=()):
+        before, quality = dict(model.fields), set(model.invalid)
+        data = snapshot(at)
+        for field, raw in changes.items(): data['fields'][field]['value'] = raw
+        data['invalid_fields'] = list(invalid)
+        model.accept(data, now or at)
+        return model.activity_changes(before, quality, now or at)
+
+    def test_selected_real_changes_and_pressure_units(self):
+        model = self.base()
+        events = self.change(model, {
+            'DetailedChargeState': {'detailed_charge_state_value': 'DetailedChargeStateComplete'},
+            'DoorState': {'door_value': {'DriverFront': True, 'TrunkRear': True}},
+            'TpmsSoftWarnings': {'tire_location_value': {'rear_right': True}},
+            'TpmsPressureRr': {'double_value': 2.1},
+            'Version': {'string_value': '2026.1.1 build'},
+            'SoftwareUpdateVersion': {'string_value': '2026.2.1'},
+        })
+        self.assertEqual([e['kind'] for e in events], ['charge_complete', 'door_opened', 'tire_pressure_warning', 'software_update_available'])
+        self.assertEqual(events[1]['position'], 'front_driver')
+        self.assertEqual(events[2]['position'], 'rear_right')
+        self.assertEqual(events[2]['pressure_bar'], 2.1)
+        self.assertNotIn('latitude', json.dumps(events))
+        self.assertEqual(events[3]['version'], '2026.2.1')
+
+    def test_startup_stale_duplicate_invalid_and_future_are_not_events(self):
+        model = self.base()
+        self.assertEqual(model.activity_changes({}, set(), 1700000000), [])
+        self.assertEqual(model.activity_changes(dict(model.fields), set(model.invalid), 1700000000), [])
+        change = {'DetailedChargeState': {'detailed_charge_state_value': 'DetailedChargeStateComplete'}}
+        self.assertEqual(self.change(model, change, now=1700000032), [])
+        model = self.base()
+        self.assertEqual(self.change(model, {'DoorState': {'invalid': True}}, invalid=['DoorState']), [])
+        self.assertEqual(self.change(model, {'DoorState': {'door_value': {'DriverFront': True}}}, at=1700000002), [])
+        model = self.base()
+        with self.assertRaises(ValueError): self.change(model, change, at=1700000010, now=1700000001)
+
+    def test_update_is_not_repeated_or_current_installed_version(self):
+        for offered in ('', ' ', '2026.1.1'):
+            model = self.base()
+            events = self.change(model, {'Version': {'string_value': '2026.1.1 build'},
+                                          'SoftwareUpdateVersion': {'string_value': offered}})
+            self.assertEqual(events, [])
+        model = self.base()
+        self.assertEqual(len(self.change(model, {'SoftwareUpdateVersion': {'string_value': '2026.2.1'}})), 1)
+        self.assertEqual(self.change(model, {'SoftwareUpdateVersion': {'string_value': '2026.2.1'}}, at=1700000002), [])
+
+    def test_tire_rearms_only_after_clear_and_missing_pressure_is_not_zero(self):
+        model = self.base()
+        changes = {'TpmsSoftWarnings': {'tire_location_value': {'front_left': True}}, 'TpmsPressureFl': {'invalid': True}}
+        events = self.change(model, changes, invalid=['TpmsPressureFl'])
+        self.assertIsNone(events[0]['pressure_bar'])
+        self.assertEqual(self.change(model, changes, at=1700000002, invalid=['TpmsPressureFl']), [])
+        self.assertEqual(self.change(model, {'TpmsSoftWarnings': {'tire_location_value': {}}}, at=1700000003), [])
+        self.assertEqual(len(self.change(model, changes, at=1700000004)), 1)
+
+
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     """Execute the actual adapter class against isolated coordinator contracts."""
     def setUp(self):
@@ -262,6 +329,30 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await self.adapter.bind()
         self.assertEqual(self.updates[-1]['state'], 'offline')
         self.assertEqual(len(self.updates), 2)
+
+    async def test_mqtt_callback_suppresses_retained_events_and_only_emits_fresh_changes(self):
+        callbacks, events = {}, []
+        async def subscribe(hass, topic, receive, qos):
+            callbacks[topic] = receive
+            return lambda: None
+        self.hass.bus = SimpleNamespace(async_listen_once=lambda *a: None,
+                                       async_fire=lambda kind, data: events.append((kind, data)))
+        self.Adapter.start.__globals__.update(mqtt=SimpleNamespace(async_subscribe=subscribe),
+            async_track_time_interval=lambda *a: lambda: None, json=json,
+            DOMAIN='tesla_fleet_stream', LOGGER=SimpleNamespace(warning=lambda *a: None),
+            timedelta=timedelta, EVENT_HOMEASSISTANT_STOP='stop')
+        await self.adapter.start()
+        receive = callbacks['test_live/test_car/fleet_status/state']
+        for at, door, retained in ((1700000001, True, True), (1700000002, False, False),
+                                   (1700000003, True, False), (1700000003, True, False)):
+            data = snapshot(at)
+            data['fields']['DoorState']['value'] = {'door_value': {'DriverFront': door}}
+            with patch.object(time, 'time', return_value=at):
+                receive(SimpleNamespace(payload=json.dumps(data), retain=retained))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0][0], 'tesla_fleet_stream_activity')
+        self.assertEqual(events[0][1]['vehicle'], 'test_car')
+        self.assertEqual(events[0][1]['kind'], 'door_opened')
 
     async def test_shutdown_cleans_subscriptions_but_not_its_removed_one_shot(self):
         cleaned = []

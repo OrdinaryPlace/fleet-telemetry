@@ -136,6 +136,53 @@ class StatusModel:
         data["_tesla_stream_source"] = "fleet_telemetry"
         return data
 
+    def activity_changes(self, previous, previous_invalid, now):
+        """Selected fresh transitions only; no initial, replay or position events.
+
+        Called only after accepting a non-retained snapshot. Previous values are
+        a local baseline, never REST state. Explicit no-offer may become a new
+        software offer; unknown physical values never become edges.
+        """
+        events = []
+        for field in ("DetailedChargeState", "DoorState", "TpmsSoftWarnings", "SoftwareUpdateVersion"):
+            old, new = previous.get(field), self.fields.get(field)
+            if old is None or new is None or field in self.invalid or new[0] <= old[0]:
+                continue
+            if not -5 <= now - new[0] / 1e9 <= 30:
+                continue
+            before, after = old[1], new[1]
+            if field != "SoftwareUpdateVersion" and (field in previous_invalid or any(v is None for v in before.values())):
+                continue
+            observed = datetime.fromtimestamp(new[0] / 1e9, timezone.utc).isoformat()
+            common = {"observed_at": observed, "source": "Tesla Fleet Telemetry"}
+            if field == "DetailedChargeState":
+                key = "charge_state_charging_state"
+                if after[key] == "Complete" and before[key] != "Complete":
+                    events.append(common | {"kind": "charge_complete"})
+            elif field == "DoorState":
+                for suffix, position in (("df", "front_driver"), ("pf", "front_passenger"), ("dr", "rear_driver"), ("pr", "rear_passenger")):
+                    key = "vehicle_state_" + suffix
+                    if before[key] == 0 and after[key] == 1:
+                        events.append(common | {"kind": "door_opened", "position": position})
+            elif field == "TpmsSoftWarnings":
+                for suffix, position in (("fl", "front_left"), ("fr", "front_right"), ("rl", "rear_left"), ("rr", "rear_right")):
+                    key = "vehicle_state_tpms_soft_warning_" + suffix
+                    if before[key] is False and after[key] is True:
+                        pressure = self.fields.get("TpmsPressure" + suffix.title())
+                        # Preserve pressure age; tires can report quietly while parked.
+                        pressure_value = pressure[1].get("vehicle_state_tpms_pressure_" + suffix) if pressure and "TpmsPressure" + suffix.title() not in self.invalid else None
+                        events.append(common | {"kind": "tire_pressure_warning", "position": position,
+                                                "pressure_bar": pressure_value,
+                                                "pressure_observed_at": datetime.fromtimestamp(pressure[0] / 1e9, timezone.utc).isoformat() if pressure_value is not None else None})
+            else:
+                key = "vehicle_state_software_update_version"
+                version = after[key]
+                installed = self.fields.get("Version")
+                current = installed[1].get("vehicle_state_car_version") if installed else None
+                if version and version.strip() and version != before[key] and version.split()[0] != (current or "").split(" ")[0]:
+                    events.append(common | {"kind": "software_update_available", "version": version})
+        return events
+
     def summary(self):
         return {"field_count": len(self.fields), "missing_required_fields": self.missing,
                 "invalid_fields": sorted(self.invalid),
