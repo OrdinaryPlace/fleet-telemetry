@@ -135,7 +135,7 @@ The private state file now uses schema 3 and reads schemas 1 and 2 for upgrade.
 It contains sensitive last-reported status and positions: protect it like the
 location archive and never publish its contents or broker messages in diagnostics.
 
-The optional `tesla_fleet_stream` companion (0.1.0) updates the **existing native
+The optional `tesla_fleet_stream` companion (0.1.2) updates the **existing native
 Fleet coordinators** from these snapshots, preserving entity IDs and native
 commands. This adapter is tested against Home Assistant Core 2026.9.2; its native
 runtime layout is not a stable extension API and must be reviewed on Core upgrades.
