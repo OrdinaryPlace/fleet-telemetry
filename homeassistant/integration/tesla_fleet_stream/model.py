@@ -144,14 +144,14 @@ class StatusModel:
         software offer; unknown physical values never become edges.
         """
         events = []
-        for field in ("DetailedChargeState", "DoorState", "TpmsSoftWarnings", "SoftwareUpdateVersion"):
+        for field in ("DetailedChargeState", "DoorState", "TpmsSoftWarnings", "SoftwareUpdateVersion", "DestinationName"):
             old, new = previous.get(field), self.fields.get(field)
             if old is None or new is None or field in self.invalid or new[0] <= old[0]:
                 continue
             if not -5 <= now - new[0] / 1e9 <= 30:
                 continue
             before, after = old[1], new[1]
-            if field != "SoftwareUpdateVersion" and (field in previous_invalid or any(v is None for v in before.values())):
+            if field not in ("SoftwareUpdateVersion", "DestinationName") and (field in previous_invalid or any(v is None for v in before.values())):
                 continue
             observed = datetime.fromtimestamp(new[0] / 1e9, timezone.utc).isoformat()
             common = {"observed_at": observed, "source": "Tesla Fleet Telemetry"}
@@ -174,6 +174,13 @@ class StatusModel:
                         events.append(common | {"kind": "tire_pressure_warning", "position": position,
                                                 "pressure_bar": pressure_value,
                                                 "pressure_observed_at": datetime.fromtimestamp(pressure[0] / 1e9, timezone.utc).isoformat() if pressure_value is not None else None})
+            elif field == "DestinationName":
+                # Explicit invalid means no active route, so it is a valid clear
+                # baseline. Missing first observations still never create events.
+                key = "drive_state_active_route_destination"
+                destination = (after[key] or "").strip()
+                if destination and destination != (before[key] or "").strip():
+                    events.append(common | {"kind": "destination_set", "destination": destination})
             else:
                 key = "vehicle_state_software_update_version"
                 version = after[key]

@@ -210,6 +210,22 @@ class ActivityEventTests(unittest.TestCase):
         model.accept(data, now or at)
         return model.activity_changes(before, quality, now or at)
 
+    def test_destination_changes_clear_rearm_and_freshness(self):
+        field = 'DestinationName'
+        model = self.base()
+        self.assertEqual(model.activity_changes({}, set(), 1700000000), [])
+        self.assertEqual(self.change(model, {field: {'invalid': True}}, invalid=[field]), [])
+        events = self.change(model, {field: {'string_value': 'Synthetic destination'}}, at=1700000002)
+        self.assertEqual([event['kind'] for event in events], ['destination_set'])
+        self.assertEqual(events[0]['destination'], 'Synthetic destination')
+        self.assertEqual(self.change(model, {field: {'string_value': 'Synthetic destination'}}, at=1700000003), [])
+        self.assertEqual(self.change(model, {field: {'string_value': '   '}}, at=1700000004), [])
+        self.assertEqual(len(self.change(model, {field: {'string_value': 'Synthetic destination'}}, at=1700000005)), 1)
+        self.assertEqual(self.change(model, {field: {'string_value': 'Different destination'}}, at=1700000006, now=1700000037), [])
+        self.assertEqual(self.change(model, {field: {'string_value': 'Different destination'}}, at=1700000007), [])
+        with self.assertRaises(ValueError):
+            self.change(model, {field: {'string_value': 'Future destination'}}, at=1700000020, now=1700000010)
+
     def test_selected_real_changes_and_pressure_units(self):
         model = self.base()
         events = self.change(model, {
